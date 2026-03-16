@@ -79,8 +79,8 @@ A Principal Component Analysis gives us a quick overview of how the
 samples cluster. We expect the WT and CompoundX samples to separate
 along one of the principal components.
 
-We use the **variance-stabilising transformation** (`vst`) so that the
-PCA is not dominated by a few highly-expressed genes.
+We use the **variance-stabilising transformation** (`vst`) since the dispersion
+(variability) depends on the mean gene expression, which would bias the PCA.
 
 ```{r}
 
@@ -97,21 +97,42 @@ plotPCA(vsd, intgroup = "condition") +
 
 ## 4 — Dispersion estimates
 
-DESeq2 models each gene's dispersion (biological variability) as a
-function of its mean expression. The plot below shows:
+DESeq2 models each gene's dispersion (variability) as a
+function of its mean expression. The plot below shows the trend 
+in the "dispersion estimate". The VST function tries to estimate and counter
+that trend.
 
-- **black dots**: gene-wise dispersion estimates
-- **red line**: the fitted trend
-- **blue dots**: the final (shrunken) estimates used for testing
 
-Genes with low counts are shrunk more towards the trend, borrowing
-strength across genes.
 
 ```{r}
 
 plotDispEsts(dds, main = "Dispersion estimates")
 
 ```
+
+
+::: {.callout-note}
+## Technical note 
+
+The dispersion estimate in DESeq2 is somewhat complicated. 
+Technically, they assume:
+$$
+\text{var}(K) = \mu + \alpha \cdot \mu^2
+$$
+
+With K the variance of a gene count, $\mu$ the gene mean and $\alpha$ the gene's "dispersion estimate".
+
+This is based on the assumption that the counts follow a Negative Binomial distribution, for which
+this relationship between variance and the mean exists.
+
+The dispersion estimate can thus be calculated as follows
+$$
+\text{var}(K) = \mu + \alpha \cdot \mu^2
+$$
+
+Which is what is shown in the plot from `plotDispEsts()`. 
+
+:::
 
 ## 5 — Results table
 
