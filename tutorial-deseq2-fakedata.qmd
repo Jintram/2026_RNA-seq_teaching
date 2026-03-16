@@ -1,0 +1,225 @@
+---
+title: "Tutorial: DESeq2 Analysis on Synthetic Data"
+format: html
+output-dir: html
+---
+
+## Introduction
+
+In this tutorial we perform a standard **DESeq2** differential expression
+analysis on the synthetic bulk RNA-seq data generated in the previous
+tutorial. We will:
+
+1. Load the count table and sample metadata
+2. Create a DESeq2 dataset and run the analysis
+3. Inspect the data with a PCA plot
+4. Examine the dispersion–mean relationship
+5. Extract the results table of differentially expressed genes (DEGs)
+6. Visualise the results with a volcano plot
+
+```{r}
+#| warning: false
+
+library(tidyverse)
+library(DESeq2)
+library(pheatmap)
+library(ggrepel)
+```
+
+## 1 — Load the data
+
+We read in the count matrix and metadata that were exported in the
+data-generation tutorial.
+
+```{r}
+
+# Count matrix — first column becomes row names
+count_data <- read.table("data_frozen/count_table.tsv", 
+                         sep = "\t", 
+                         header = TRUE, 
+                         row.names = 1, 
+                         check.names = FALSE)
+
+# Sample metadata
+col_data <- read.table("data_frozen/sample_metadata.tsv", 
+                       sep = "\t", 
+                       header = TRUE)
+
+# DESeq2 requires the row names of colData to match the column names of the counts
+rownames(col_data) <- col_data$sample
+
+# Make sure condition is a factor with WT as the reference level
+col_data$condition <- factor(col_data$condition, levels = c("WT", "CompoundX"))
+
+head(count_data)
+col_data
+
+```
+
+## 2 — Create the DESeqDataSet and run DESeq2
+
+`DESeqDataSetFromMatrix` ties together the count matrix and the metadata.
+The **design formula** `~ condition` tells DESeq2 we want to test for
+differences between WT and CompoundX.
+
+```{r}
+
+dds <- DESeqDataSetFromMatrix(countData = round(count_data),
+                              colData   = col_data,
+                              design    = ~ condition)
+
+# Run the full DESeq2 pipeline:
+#   estimation of size factors, dispersion, and model fitting
+dds <- DESeq(dds)
+
+```
+
+## 3 — PCA plot
+
+A Principal Component Analysis gives us a quick overview of how the
+samples cluster. We expect the WT and CompoundX samples to separate
+along one of the principal components.
+
+We use the **variance-stabilising transformation** (`vst`) so that the
+PCA is not dominated by a few highly-expressed genes.
+
+```{r}
+
+# Normally, you'd use (for many genes)
+# vsd <- vst(dds, blind = FALSE)
+# Now, we'll use:
+vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
+
+plotPCA(vsd, intgroup = "condition") +
+    theme_minimal() +
+    ggtitle("PCA — WT vs CompoundX")
+
+```
+
+## 4 — Dispersion estimates
+
+DESeq2 models each gene's dispersion (biological variability) as a
+function of its mean expression. The plot below shows:
+
+- **black dots**: gene-wise dispersion estimates
+- **red line**: the fitted trend
+- **blue dots**: the final (shrunken) estimates used for testing
+
+Genes with low counts are shrunk more towards the trend, borrowing
+strength across genes.
+
+```{r}
+
+plotDispEsts(dds, main = "Dispersion estimates")
+
+```
+
+## 5 — Results table
+
+We extract the results for the contrast **CompoundX vs WT**. Key columns:
+
+| Column           | Meaning                                      |
+|------------------|----------------------------------------------|
+| `log2FoldChange` | log₂ fold-change (CompoundX / WT)            |
+| `pvalue`         | raw p-value from the Wald test               |
+| `padj`           | Benjamini–Hochberg adjusted p-value           |
+
+```{r}
+
+res <- results(dds, contrast = c("condition", "CompoundX", "WT"))
+
+# Order by adjusted p-value
+res_ordered <- res[order(res$padj), ]
+
+# Show the top DEGs
+head(as.data.frame(res_ordered), 20)
+
+# How many genes pass padj < 0.05?
+summary(res, alpha = 0.05)
+
+```
+
+## 6 — Volcano plot
+
+A volcano plot shows **statistical significance** (−log₁₀ adjusted
+p-value) on the y-axis against **effect size** (log₂ fold-change) on the
+x-axis. Genes that are both statistically significant and have a large
+fold-change appear in the top-left and top-right corners.
+
+```{r}
+
+# Convert results to a data frame for ggplot
+df_volcano <- as.data.frame(res) %>%
+    rownames_to_column("Gene") %>%
+    mutate(
+        significant = case_when(
+            is.na(padj)            ~ "NS",
+            padj < 0.05 & log2FoldChange >  1 ~ "Up",
+            padj < 0.05 & log2FoldChange < -1 ~ "Down",
+            TRUE                               ~ "NS"
+        )
+    )
+
+# Top 5 up-regulated and top 5 down-regulated genes (by padj)
+df_volcano_top <- df_volcano %>%
+    filter(significant %in% c("Up", "Down")) %>%
+    group_by(significant) %>%
+    slice_min(padj, n = 5) %>%
+    ungroup()
+
+ggplot(df_volcano, aes(x = log2FoldChange, y = -log10(pvalue), colour = significant)) +
+    geom_point(alpha = 0.7, size = 1.5) +
+    scale_colour_manual(values = c("Up" = "firebrick", "Down" = "steelblue", "NS" = "grey60")) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "grey40") +
+    geom_vline(xintercept = c(-1, 1),     linetype = "dashed", colour = "grey40") +
+    geom_text_repel(data = df_volcano_top, aes(label = Gene),
+                    size = 3, max.overlaps = 20, show.legend = FALSE) +
+    theme_minimal() +
+    labs(title = "Volcano plot — CompoundX vs WT",
+         x = expression(log[2]~fold~change),
+         y = expression(-log[10]~p~value),
+         colour = "Direction")
+
+```
+
+## Questions
+
+We used generated data for this tutorial. These were the details we put in:
+
+| Gene   | WT_reads | CompoundX_reads | Regulation   |
+|--------|----------|-----------------|--------------|
+| aceA   | 500      | 1200            | Up           |
+| pykF   | 800      | 1600            | Up           |
+| gltA   | 400      | 410             | Up           |
+| crs    | 3        | 5               | Up           |
+| tpiA   | 3        | 1000            | Up           |
+| icd    | 1500     | 700             | Down         |
+| pgi    | 900      | 400             | Down         |
+| fumA   | 600      | 200             | Down         |
+| lpdA   | 300      | 100             | Down         |
+| zwf    | 20       | 15              | Down         |
+| nrsX   | 1..1000* | idem            | None         |
+
+_*)  1..1000 is a random number between 1 and 1000, equal for both conditions._
+
+### Now answer the following questions
+
+- Look at the results table, `res_ordered`:
+    - When we look at the p-values column, ie `pvalue`, we see many genes with
+    significant p-values. How come many of the "nrs" genes are also considered
+    significant when we look at `pvalue`? 
+        - What is p-value correction?
+        - Does this succeed completely in its aim?
+    - Why are not all genes that we know are DE not included in this list? (E.g. our 
+    key transcription factor crs.)
+    - What is our false discovery rate? And what is our power?
+- Look at the Volcano plot:
+    - Can you link each of the genes in the table with true values above
+    to the Volcano plot? 
+- Select all significant genes, for example `padj<0.05` from `res_ordered`. 
+Can you explain this?
+- Select a gene, and make a plot of its expression values, perhaps look into some
+genes that show behavior you expected and did not expect (if any).
+
+
+
