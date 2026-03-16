@@ -1,12 +1,13 @@
 ---
 title: "Tutorial: Bulk RNA-seq Synthetic Data"
 format: html
-output-dir: html
 ---
 
 ```{r}
 # Libraries required for this
 library(tidyverse)
+# Set up data/ directory
+dir.create("data", showWarnings = FALSE)
 ```
 
 We're going to create a fictional case to explain RNA-seq.

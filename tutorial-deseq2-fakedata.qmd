@@ -1,7 +1,6 @@
 ---
 title: "Tutorial: DESeq2 Analysis on Synthetic Data"
 format: html
-output-dir: html
 ---
 
 ## Introduction
