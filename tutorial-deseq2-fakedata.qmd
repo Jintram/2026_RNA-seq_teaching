@@ -98,21 +98,34 @@ plotPCA(vsd, intgroup = "condition") +
 ## 4 — Dispersion estimates
 
 DESeq2 models each gene's dispersion (variability) as a
-function of its mean expression. The plot below shows the trend 
-in the "dispersion estimate". The VST function tries to estimate and counter
+function of its mean expression. 
+It is generally observed in RNA-seq data that the dispersion changes 
+with different mean values.
+The plot below shows the trend 
+in the "dispersion estimate". The `vst()` function (or it's equivalent for very little data
+ `varianceStabilizingTransformation()`) tries to estimate and counter
 that trend.
-
 
 
 ```{r}
 
+# What DESeq2 does
 plotDispEsts(dds, main = "Dispersion estimates")
+# The actual dispersion that we generated the data with
+abline(h = 1/100, lty = 2, col = "grey")
 
 ```
 
+DESeq2 uses dispersion estimates (determined for each gene) in two ways;
+
+- When we use `plotPCA(vst(dds))` to generate a PCA plot, the PCA will work with a count table where
+variance is stabilised across genes, such that each gene contributes equally to the PCA.
+- Later, when statistical testing is performed, the dispersion is taken along
+in the model fitting, which is important for accurate p-values and fold-change estimates.
 
 ::: {.callout-note}
-## Technical note 
+
+## The difference between dispersion and variance
 
 The dispersion estimate in DESeq2 is somewhat complicated. 
 Technically, they assume:
@@ -120,23 +133,48 @@ $$
 \text{var}(K) = \mu + \alpha \cdot \mu^2
 $$
 
-With K the variance of a gene count, $\mu$ the gene mean and $\alpha$ the gene's "dispersion estimate".
+With K (multiple observations of) counts of a gene, $\mu$ the gene mean and $\alpha$ the gene's "dispersion estimate".
 
 This is based on the assumption that the counts follow a Negative Binomial distribution, for which
 this relationship between variance and the mean exists.
 
 The dispersion estimate can thus be calculated as follows
 $$
-\text{var}(K) = \mu + \alpha \cdot \mu^2
+\alpha = \frac{\text{var}(K) - \mu}{\mu^2}
 $$
 
-Which is what is shown in the plot from `plotDispEsts()`. 
+Which is the `dispersion` value that is shown in the plot from `plotDispEsts()`. 
+
+::: 
+
+::: {.callout-note}
+
+### How well does this model fit our generated data?
+
+In our previous section, we generated data with a specific dispersion coefficient,
+$\alpha=1/100$. So our generated data is a-typical, all genes should have the 
+same dispersion coeffient $\alpha$, independent of their mean values.
+
+I've added the grey dotted line to show that in the plot above. 
+We can see that the data (black dots) indeed adhere that line.
+However, DESeq2 thinks that the relationship (red dots) shows higher 
+dispersion values for low-expressed genes. 
+So for our limited generated data, it does **not** do a fantastic job.
+This will work pretty well for real data though.
 
 :::
 
 ## 5 — Results table
 
-We extract the results for the contrast **CompoundX vs WT**. Key columns:
+DESeq2 will fit our design (a formula describing the expected effect of our
+condition) to each gene, 
+taking into account the normalization (size factors) and the dispersion estimates,
+and perform a Wald statistical test to determine 
+whether the observed differences between conditions are significant. 
+In fact, this was already done when we executed `dds <- DESeq(dds)`.
+
+We can now extract the results for the contrast **CompoundX vs WT**. 
+Key columns are:
 
 | Column           | Meaning                                      |
 |------------------|----------------------------------------------|
@@ -158,6 +196,9 @@ head(as.data.frame(res_ordered), 20)
 summary(res, alpha = 0.05)
 
 ```
+
+The `padj` p value is the value you'll want to look at (as addressed
+in the questions below). 
 
 ## 6 — Volcano plot
 
@@ -187,6 +228,7 @@ df_volcano_top <- df_volcano %>%
     slice_min(padj, n = 5) %>%
     ungroup()
 
+# Make the plot
 ggplot(df_volcano, aes(x = log2FoldChange, y = -log10(pvalue), colour = significant)) +
     geom_point(alpha = 0.7, size = 1.5) +
     scale_colour_manual(values = c("Up" = "firebrick", "Down" = "steelblue", "NS" = "grey60")) +

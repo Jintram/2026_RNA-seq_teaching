@@ -14,9 +14,10 @@ Description of files:
     
 ## To generate html files
 
+
 ```{bash}
 # In terminal, with quarto installed, use:
-quarto render tutorial-bulkseq-synthetic-data.qmd --output-dir html/ --no-clean
+quarto render tutorial-generate-synthetic-data.qmd --output-dir html/ --no-clean
 quarto render tutorial-deseq2-fakedata.qmd --output-dir html/ --no-clean
 ```
 

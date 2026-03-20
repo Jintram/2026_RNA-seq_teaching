@@ -1,9 +1,11 @@
 ---
-title: "Tutorial: Bulk RNA-seq Synthetic Data"
+title: "Tutorial: Generate Synthetic RNA-seq Data"
 format: html
 ---
 
 ```{r}
+#| warning: false
+
 # Libraries required for this
 library(tidyverse)
 # Set up data/ directory
@@ -22,10 +24,9 @@ the organism's metabolic pathways are disrupted, and it needs to turn on
 alternative pathways.
 
 - Some of those genes are highly expressed, whilst other aren't. 
-    - 
 - 5 go down, and 5 go up. 
 
-The "true" concentrations, in terms of reads, are as follows:
+The "true" average concentrations, in terms of reads, are as follows:
 
 | Gene   | WT_reads | CompoundX_reads | Regulation   |
 |--------|----------|-----------------|--------------|
@@ -124,7 +125,7 @@ heatmap_data <- df_gene_data_all %>%
 pheatmap(heatmap_data,
             cluster_rows = FALSE, 
             cluster_cols = FALSE, 
-            show_rownames = TRUE, 
+            show_rownames = FALSE, 
             show_colnames = TRUE,
             scale="none",
             annotation_col = df_annotation
@@ -143,12 +144,59 @@ pheatmap(heatmap_data[1:10,],
 ```
 
 
-Now convert the `df_gene_data_all` to a dataframe with negative binomial noise.
+Now convert the `df_gene_data_all` to a dataframe with variability
+that we'll generate with a negative binomial distribution.
 
+::: {.callout-note}
+### Technical note
+You might be used to **gaussian variability**, but 
 RNA-seq counts are typically modeled with a **negative binomial distribution**,
 which has variance $\text{Var} = \mu + \mu^2 / \theta$, where $\mu$ is the mean
 and $\theta$ (`size`) is the dispersion parameter. A larger $\theta$ means less
-noise (approaching Poisson). We'll use $\theta = 10$, a realistic moderate level.
+noise (approaching Poisson). We'll use $\theta = 100$, which is chosen
+such that we'll see some false positives and false negatives in our data.
+Sometimes, the term $\theta$ is replaced with $\alpha = 1/\theta$, which is the 
+dispersion parameter used by DESeq2.
+:::
+
+For example, a gene with an expression of 500, will have a variability of 
+`500 + 500^2 / 100 = 3000` (pretty high!), and it's distribution will look as follows:
+
+```{r}
+# plot binominal prob. distribution function
+ggplot() +
+  geom_function(fun = dnbinom, args = list(mu = 500, size = 100)) +
+  xlim(c(0,2000))+
+  theme_classic() +
+  xlab("counts") + ylab("probability")
+```
+
+Let's check whether if we would have a 1000 samples, we would indeed find a 
+mean of `500` and a variability of `3000`;
+
+```{r}
+# draw 1000 numbers according to binominal, mu=500, size=100
+simulated_counts <- rnbinom(n = 1000, mu = 500, size = 100)
+# calculate and print variability
+print(paste0("Mean = ", round(mean(simulated_counts),2)))
+print(paste0("Variance = ", round(var(simulated_counts),2)))
+```
+
+This part of the theory works!
+
+By the way, the shape of the negative binominal distribution becomes more 
+asymmetric when the size factor decreases, e.g. for $\theta=3$:
+
+```{r}
+# plot prob. distribution function, now for size = 3
+ggplot() +
+  geom_function(fun = dnbinom, args = list(mu = 500, size = 3), color='red') +
+  xlim(c(0,2000))+
+  theme_classic() +
+  xlab("counts") + ylab("probability")
+```
+
+OK. Now let's add variability to all genes in the dataframe:
 
 ```{r}
 
@@ -179,8 +227,6 @@ df_gene_data_noisy %>%
 And export this data to a tsv file, as would be typical for a count table, 
 and also export metadata.
 
-
-
 ```{r}
 
 # Export count matrix (genes as rows, samples as columns, no row names column)
@@ -210,3 +256,6 @@ write.table(df_metadata,
 cat("Exported count_table.tsv and sample_metadata.tsv\n")
 
 ```
+
+Excellent! In the next section, we'll check which of the differential expression
+that we engineered into this data we can find back using RNA-seq analysis by DESeq2.
