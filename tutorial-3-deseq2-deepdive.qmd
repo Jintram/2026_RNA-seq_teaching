@@ -4,19 +4,76 @@ format: html
 editor: visual
 ---
 
-# Load data
+# Setting up
+
+## Acknowledgements
+
+Aside from the [DESeq2 paper itself](http://doi.org/10.1186/s13059-014-0550-8), additional [explanation](https://hbctraining.github.io/Intro-to-DGE/schedule/links-to-lessons.html) from [Mistry et al.](https://doi.org/10.5281/zenodo.4783480) from the Harvard Chan Bioinformatics Core was very helpfull in compiling this tutorial.
+
+<!--
+Meeta Mistry, Mary Piper, Jihe Liu, & Radhika Khetani. (2021, May 24). hbctraining/DGE_workshop_salmon_online: Differential Gene Expression Workshop Lessons from HCBC (first release). Zenodo. https://doi.org/10.5281/zenodo.4783481. RRID:SCR_025373.
+-->
+
+## Libraries
+
+Import libraries that we'll need.
 
 ```{r}
-# Loads two example datasets;
-# - Synthetic one that was generated in main dir of this repo
-# - Example dataset GLDS38, see https://osdr.nasa.gov/bio/repo/data/studies/OSD-38 (pre-processed to counts)
+#| warning: false
 
-# this script yields
-# - count_data_synth
-# - count_data_real
-# - count_data_synth_long
-# - count_data_real_long
+library(tidyverse)
+library(DESeq2)
+library(pheatmap)
+library(ggrepel)
+library(scales)
+
+# Set up output directory
+if (!dir.exists("plots/tut-3")) {
+    dir.create("plots/tut-3", recursive = TRUE, showWarnings = FALSE)
+}
+
 ```
+
+Define some functions and settings to make our plots look fancy later.
+
+```{r}
+
+# Bars should be black per default
+update_geom_defaults("bar", list(fill = "black"))  # sets it globally for session
+
+# Bigger arial font 
+custom_adjust_fonts <- function(size = 15, family = "Arial") {
+  theme(
+    text             = element_text(size = size, family = family),
+    axis.text        = element_text(size = size, family = family),
+    axis.title       = element_text(size = size, family = family),
+    plot.title       = element_text(size = size, family = family),
+    plot.subtitle    = element_text(size = size, family = family),
+    legend.text      = element_text(size = size, family = family),
+    legend.title     = element_text(size = size, family = family),
+    strip.text       = element_text(size = size, family = family)
+  )
+}
+
+# Some bar graph settings I prefer
+custom_theme_bar <- function() {
+  list(
+    theme_classic(),
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)),
+    scale_y_continuous(
+      labels = scales::label_comma(), 
+      expand = expansion(mult = c(0, 0.05)),
+      limits = c(0, NA)
+      ),
+    custom_adjust_fonts()
+  )
+}
+
+```
+
+## Load data
+
+Let's first load two datasets: - The synthetic one that was generated in tutorial 1. - Example dataset [GLDS38](https://osdr.nasa.gov/bio/repo/data/studies/OSD-38), for which pre-processed count data is available in the `data-real/` directory.
 
 ```{r}
 # Import the table
@@ -32,32 +89,257 @@ count_data_real <- read.csv("/Users/m.wehrens/Data_UVA/example-datasets/2026_RNA
                             row.names=1)
 count_data_real_meta <- read.csv("/Users/m.wehrens/Data_UVA/example-datasets/2026_RNAseq-Misha/samples_to_condition.csv",
                           row.names=1)
-print("Loaded count_data_synth and count_data_real")
+                          
+# Now show 
 ```
 
+And let's convert this to the tidy (aka 'long') format.
+
 ```{r}
-# make the format long
+# Convert synthetic data to long format
 count_data_synth_long <- count_data_synth %>%
     rownames_to_column(var="gene") %>%
     pivot_longer(-gene, 
                 names_to = "condition",
                 values_to = "counts") 
     
+# Convert real data to long format
 count_data_real_long <- count_data_real %>%
     rownames_to_column(var="gene") %>%
     pivot_longer(-gene, 
                 names_to = "sample",
                 values_to = "counts") %>%
-    # set condition to FLT or GC, based on presence of _FLT_ or _GC_ string in condtion column
+
+    # Additionally, set condition to FLT or GC, based on presence of _FLT_ or 
+    # _GC_ string in sample name column
     mutate(condition = case_when(
         str_detect(sample, "_FLT_") ~ "FLT",
         str_detect(sample, "_GC_") ~ "GC",
         TRUE ~ sample
-    ))
-print("Formatted data in long format, count_data_synth_long, count_data_real_long")
+    )) |>
+    
+    # And create abbreviated sample names
+    mutate(sample_brief=str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+    mutate(sample_brief=str_remove(sample_brief, "_G.S.$")) 
+```
+
+# Overview of the DESeq2 appraoch
+
+When running the DESeq2 analysis, we see the following output:
+
+```
+estimating size factors
+estimating dispersions
+gene-wise dispersion estimates
+mean-dispersion relationship
+final dispersion estimates
+fitting model and testing
+```
+
+What happens during the DESeq2 analysis?
+
+1. **Normalization using size factors**
+2. **Dispersion estimate**
+3. **Estimate dispersion per gene**
+4. **
+
+
+# Normalization: size factors
+
+If sample 1 in total has 5000 reads, and sample 2 in total has 10000 reads, and we consider a gene X, we expect that gene to have more reads in sample 2. In fact, a good guess would be that gene X has 2x as many reads in sample 2.
+
+So, to more honestly compare samples, we need to *normalize* for the amount of reads in each samples.
+
+When we have count table where rows correspond to genes, and columns to samples, we could simply divide each column by its total, and work with those values. Or, one step better, do that, and multiply with the mean of total sample counts, such that the values we end up with are in the same range as those with which we started.
+
+DESeq2 takes a little more sophisticated appraoch. The total counts in a sample can be skewed by gene composition, e.g. a few highly expressed differentially expressed (DE) genes can affect total counts \[[1](https://hbctraining.github.io/Intro-to-DGE/lessons/02_DGE_count_normalization.html)\], \[[2](https://link.springer.com/article/10.1186/gb-2010-11-10-r106)\].
+It therefor calculates a pseudo-reference sample, with arithmetic averages
+over the samples for each gene, then normalizes each gene by the reference sample, 
+and then calculates the median normalized expression per sample. 
+This somewhat complex scheme is summarized below:
+
+| Gene  | sampleA | sampleB | Pseudo-reference sample   | sampleA/ref        | sampleB/ref       |
+| ----- | ------- | ------- | ------------------------- | ------------------ | ----------------- |
+| EF2A  | 1489    | 906     | sqrt(1489 * 906) = 1161.5 | 1489/1161.5 = 1.28 | 906/1161.5 = 0.78 |
+| ABCD1 | 22      | 13      | sqrt(22 * 13) = 17.7      | 22/16.9 = 1.30     | 13/16.9 = 0.77    |
+| ...   | ...     | ...     | ...                       | ...                | ...               |
+|       |         |         |                           | **size factor sampleA:** median(1.28, 1.30, ..) = 1.30 | **size factor sampleB:** median(0.78, 0.77, ..) = 0.78 |
+
+Let's go over this with some code. 
+
+## Total reads per sample
+
+First, let's simply show the total reads per sample:
+
+```{r}
+# First determine total reads per sample
+df_total_reads <- count_data_real_long |>
+    group_by(sample) |>
+    summarize(total_counts = sum(counts))
+    
+# Now plot in bar graph
+p <- df_total_reads |>
+  mutate(sample=str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+  ggplot(aes(x=sample, y=total_counts)) +
+    geom_bar(stat="identity") +
+    xlab('Sample')+ylab('Total counts')+
+    custom_theme_bar() 
+  
+# save
+ggsave("plots/tut-3/total_counts_per_sample.pdf", plot=p, width=10, height=16, units='cm', device=cairo_pdf)
+# and show
+p + custom_adjust_fonts(12)
+```
+
+## Estimate size factors manually
+
+Now, estimate the size factors per sample, the same way DESeq2 does it.
+
+```{r}
+
+# Estimate the "size factors"
+# Create reference sample; geometric mean
+df_size_factors <- count_data_real_long |>  
+  # Calculate geometric means of gene values
+  group_by(gene) |>
+  mutate(geom_mean = exp(mean(log(counts)))) |>
+    # More explicit alternative; theoretically same, though less numerically stable
+    # mutate(geom_mean = median(prod(counts)^(1/(length(counts))))) |>
+  ungroup() |>
+  # Filter out zero values (choice following DESeq2)
+  filter(geom_mean > 0) |>
+  # Now normalize the counts by geom mean
+  mutate(counts_norm = counts/geom_mean) |>
+  # And calculate median normalized counts (=size factor)
+  group_by(sample) |>
+  summarize(size_factor = median(counts_norm, na.rm=TRUE))
+
+# now plot those
+p <- df_size_factors |>
+  mutate(sample=str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+  ggplot(aes(x=sample, y=size_factor)) +
+  geom_bar(stat="identity") +
+  xlab('Sample') + ylab('Size factor')
+  custom_theme_bar()
+# save
+ggsave("plots/tut-3/size_factors_per_sample.pdf", plot=p, width=10, height=16, units='cm', device=cairo_pdf)
+# show
+p + custom_adjust_fonts(12)
+
+```
+
+## Compare manual size factors with DESeq2
+
+As a sanity check, let's see whether this complies with DESeq2:
+
+```{r}
+
+# Let's see how well this matches DESeq2's assessment
+
+# Set up a dds
+dds <- DESeqDataSetFromMatrix(countData = count_data_real,
+                              colData   = count_data_real_meta,
+                              design    = ~ condition)
+dds <- estimateSizeFactors(dds)
+the_sizefactors <- sizeFactors(dds)
+df_size_factors_deseq2 <- data.frame(
+  size_factor = unname(the_sizefactors),
+  sample = names(the_sizefactors))
+
+# now comparison
+df_size_factors_all <-  
+  rbind( df_size_factors |> mutate(origin="manual"), 
+        df_size_factors_deseq2 |> mutate(origin = "deseq2"))
+        
+# now plot
+p <- df_size_factors_all |>
+  mutate(sample = str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+  ggplot(aes(x = sample, y = size_factor, fill = origin)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  scale_fill_manual(values = c("manual" = "black", "deseq2" = "red")) + 
+  xlab('Sample') + ylab('Size factor') +
+  custom_theme_bar()
+  
+ggsave("plots/tut-3/size_factors_manual_vs_deseq2.pdf", plot = p, width = 10, height = 16, units = "cm", device=cairo_pdf)
+
+p + custom_adjust_fonts(12)
+```
+
+## Manually normalize genes and see effect
+
+Let's now apply normalization of the count values, and illustrate the effect
+with a plot for 10 random genes.
+
+```{r}
+
+# set seed for reproducibility
+set.seed(123)
+
+# add size factors to count table, and add normalized counts to table 
+count_data_real_long_normalized <- count_data_real_long |>
+  left_join(df_size_factors, by='sample') |>
+  mutate(normalized_count = counts/size_factor)
+
+# plot 10 random genes, with raw and normalized counts
+p <- count_data_real_long_normalized |> 
+  pivot_longer(cols=c(counts, normalized_count), names_to="type", values_to = "counts") |>
+  filter(gene %in% sample(unique(gene), 9)) |>  
+  ggplot(aes(x=sample_brief, y=counts, color=type, shape=condition)) +
+    # geom_bar(stat="identity", position="dodge") +
+    geom_point() +
+    facet_wrap(~gene, scales = "free_y", ncol = 3) +
+    theme_classic() +
+    xlab('Condition') + ylab('Counts') +
+    scale_color_manual(values = c("counts" = "black", "normalized_count" = "red")) + 
+    # scale_color_manual(values = c("FLT" = "darkblue", "GC" = "brown")) +
+    custom_theme_bar()
+
+# and save
+ggsave("plots/tut-3/normalized_counts_example_raw.pdf", plot=p, width=20, height=15, units='cm', device=cairo_pdf)
+
+p + custom_adjust_fonts(12)
+
+```
+
+In the plot above, the red points better reflect the true transcript concentrations 
+compared between the samples.
+
+As a final point, note that the total counts for each sample
+are not after DESeq2's normalization.
+
+```{r}
+# Let's do a full run
+dds_full <- DESeq(dds)
+
+# We can now also get normalized count matrix from deseq2
+normalized_counts <- counts(dds_full, normalized=TRUE)
+# Which doesn't have all sample totals equal
+colSums(normalized_counts)
+
+
+p <- count_data_real_long_normalized |> 
+  pivot_longer(cols=c(counts, normalized_count), names_to="type", values_to = "counts") |>
+  group_by(sample_brief, type) |>
+  summarize(total_counts = sum(counts)) |>
+  ungroup() |> 
+  ggplot(aes(x=sample_brief, y=total_counts, fill=type)) +
+    geom_bar(stat="identity", position="dodge") +
+    theme_classic() +
+    xlab('Condition') + ylab('Total counts') +
+    scale_fill_manual(values = c("counts" = "grey", "normalized_count" = "black")) + 
+    custom_theme_bar()
+
+ggsave(
+  "plots/tut-3/normalization_comparison.pdf", 
+  plot=p, width=20, height=15, units='cm', device=cairo_pdf
+  )
+
 ```
 
 # Calculate dispersions
+
+
 
 ```{r}
 # Information about the dispersion of gene counts plays a big role in
@@ -91,127 +373,6 @@ df_dispersion_real <- count_data_real_long %>%
 print("Calculated dispersion data frame, df_dispersion_synth, df_dispersion_real")
 ```
 
-# Normalization: size factors
-
-```{r}
-library(tidyverse)
-library(ggplot2)
-
-library(DESeq2)
-```
-
-## Total reads per sample
-
-```{r}
-# First determine total reads per sample
-df_total_reads <- count_data_real_long |>
-    group_by(sample) |>
-    summarize(total_counts = sum(counts))
-    
-# Now plot in bar graph
-p <- df_total_reads |>
-  mutate(sample=str_remove(sample, "Atha_WT_Col_0_sl_")) |>
-  ggplot(aes(x=sample, y=total_counts)) +
-    geom_bar(stat="identity") + 
-    theme_classic() +
-    theme(axis.text.x = element_text(angle = 90, hjust = 1))
-# p    
-# save
-ggsave("plots/total_counts_per_sample.pdf", plot=p, width=7, height=7, units='cm')
-```
-
-## Estimate size factors manually
-
-```{r}
-# Estimate the "size factors"
-# Create reference sample; geometric mean
-df_size_factors <- count_data_real_long |>  
-  # Calculate geometric means of gene values
-  group_by(gene) |>
-  mutate(geom_mean = median(prod(counts)^(1/(length(counts))))) |>
-  ungroup() |>
-  # Now normalize the counts by geom mean
-  mutate(counts_norm = counts/geom_mean) |>
-  # And calculate median normalized counts (=size factor)
-  group_by(sample) |>
-  summarize(size_factor = median(counts_norm, na.rm=TRUE))
-
-# now plot those
-p <- df_size_factors |>
-  mutate(sample=str_remove(sample, "Atha_WT_Col_0_sl_")) |>
-  ggplot(aes(x=sample, y=size_factor)) +
-  geom_bar(stat="identity") +
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1))
-# p    
-# save
-ggsave("plots/size_factors_per_sample.pdf", plot=p, width=7, height=7, units='cm')
-```
-
-## Compare manual size factors with DESeq2
-
-```{r}
-# Let's see how well this matches DESeq2's assessment
-dds <- DESeqDataSetFromMatrix(countData = count_data_real,
-                              colData   = count_data_real_meta,
-                              design    = ~ condition)
-dds <- estimateSizeFactors(dds)
-the_sizefactors <- sizeFactors(dds)
-df_size_factors_deseq2 <- data.frame(
-  size_factor = unname(the_sizefactors),
-  sample = names(the_sizefactors))
-
-# now comparison
-df_size_factors_all <-  
-  rbind( df_size_factors |> mutate(origin="manual"), 
-        df_size_factors_deseq2 |> mutate(origin = "deseq2"))
-# now plot
-p <- df_size_factors_all |>
-  mutate(sample = str_remove(sample, "Atha_WT_Col_0_sl_")) |>
-  ggplot(aes(x = sample, y = size_factor, fill = origin)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-  scale_fill_manual(values = c("manual" = "black", "deseq2" = "red"))
-# p
-ggsave("plots/size_factors_manual_vs_deseq2.pdf", plot = p, width = 9, height = 7, units = "cm")
-
-# We can now also get normalized count matrix from deseq2
-normalized_counts <- counts(dds, normalized=TRUE)
-# Which doesn't have all sample totals equal
-colSums(normalized_counts)
-```
-
-## Normalized count totals and full DESeq2 analysis
-
-```{r}
-# Also in the overall DESeq2 analysis, dispersion-stablization is used
-# (See also https://hbctraining.github.io/Intro-to-DGE/lessons/04b_DGE_DESeq2_analysis.html)
-
-# So we have
-# - Size factor correction
-# - Dispersion correction
-
-# Plot, remind ourselves that also the per-sample count normalization went well
-normalized_counts_sampletotals <- colSums(normalized_counts)
-p <- 
-  data.frame(
-    counts = unname(normalized_counts_sampletotals),
-    sample = names(normalized_counts_sampletotals)
-  ) |>
-  mutate(sample = str_remove(sample, "Atha_WT_Col_0_sl_")) |>
-  ggplot(aes(x = sample, y = counts)) +
-  geom_bar(stat = "identity") +
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-  xlab("Sample") + ylab("Counts\n(normalized by size factors)")
-ggsave("plots/total_counts_per_sample_normalized.pdf", plot=p, width=7, height=10, units='cm')
-
-
-# Run the whole analysis
-dds_2 <- DESeq(dds) # saving to dds_2 here, usually not done
-```
-
 # Variance, mean, and dispersion
 
 ## Variance versus mean
@@ -232,7 +393,7 @@ fn_NBvariance <- function(mu, alpha) {
     return(mu + alpha * mu^2)
 }
 MY_ALPHA = 1/100
-ggplot(df_dispersion, aes(x=mean, y=variance)) +
+ggplot(df_dispersion_synth, aes(x=mean, y=variance)) +
     geom_point() + 
     geom_abline(slope=1, intercept=0, color='red') +
     stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA), color='blue') +
@@ -247,7 +408,7 @@ ggplot(df_dispersion, aes(x=mean, y=variance)) +
 ```{r}
 # Now plot (var(K)-mu) / mu^2 versus mean
 # This produces a similar plot to the dispresion estimate plot of DESeq2
-ggplot(df_dispersion, aes(x=mean, y=alpha)) +
+ggplot(df_dispersion_synth, aes(x=mean, y=alpha)) +
     geom_point() +
     scale_x_log10() + scale_y_log10(limits=c(1e-8, 10))+
     xlab("mean") + ylab("dispersion estimate\nalpha = (var(K)-mu) / mu^2")
@@ -283,8 +444,8 @@ p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
     ylab('Variance in gene expression (all conditions)') +
     ggtitle('Spaceflight data')
 # p
-# export to directory plots/
-ggsave("plots/variance_mean_real_data.pdf", plot=p, width=10, height=10, units='cm')
+# export to directory plots/tut-3/
+ggsave("plots/tut-3/variance_mean_real_data.pdf", plot=p, width=10, height=10, units='cm')
 ```
 
 # Log2 fold change
@@ -313,7 +474,7 @@ p <- count_data_real_long |>
         geom_jitter(height = 0, width = 0.1) +
         theme_classic() +
         ggtitle(MYGENE)
-ggsave("plots/gene_example_highl2fc.pdf", plot=p, width=7, height=7, units='cm')
+ggsave("plots/tut-3/gene_example_highl2fc.pdf", plot=p, width=7, height=7, units='cm')
 ```
 
 # PCA fundamentals
@@ -430,7 +591,7 @@ p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
     ylab('Variance in gene expression (all conditions)') +
     ggtitle('Spaceflight data')
 p
-ggsave("plots/variance_mean_real_data_raw.pdf", plot=p, width=10, height=10, units='cm')
+ggsave("plots/tut-3/variance_mean_real_data_raw.pdf", plot=p, width=10, height=10, units='cm')
 ```
 
 ## Z-score normalization
@@ -470,7 +631,7 @@ p <- ggplot(df_dispersion_real_zscore, aes(x=mean, y=variance)) +
     ylab('Variance in gene expression (all conditions)') +
     ggtitle('Spaceflight data, z-scores')
 p
-ggsave("plots/variance_mean_real_data_zscore.pdf", plot=p, width=10, height=10, units='cm')
+ggsave("plots/tut-3/variance_mean_real_data_zscore.pdf", plot=p, width=10, height=10, units='cm')
 ```
 
 ```{r}
@@ -522,7 +683,7 @@ p <- ggplot(df_dispersion_ddsvst, aes(x=mean, y=variance)) +
     ylab('Variance in gene expression (all conditions)') +
     ggtitle('Spaceflight data, variance stabilized')
 p
-ggsave("plots/variance_mean_real_data_vst.pdf", plot=p, width=10, height=10, units='cm')
+ggsave("plots/tut-3/variance_mean_real_data_vst.pdf", plot=p, width=10, height=10, units='cm')
 ```
 
 ## PCA on VST data
@@ -540,7 +701,7 @@ p <- ggplot(pca_res, aes(x=PC1, y=PC2, shape=condition,
     scale_color_manual(values=c("space_flight"="darkblue", "ground_control"="brown")) +
     theme(legend.position = "none")
 p
-ggsave("plots/pca_deseq2.pdf", plot=p, width=10, height=10, units='cm')
+ggsave("plots/tut-3/pca_deseq2.pdf", plot=p, width=10, height=10, units='cm')
 ```
 
 ## Normalized count totals (recap)
@@ -566,11 +727,9 @@ p <-
   theme_classic() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
   xlab("Sample") + ylab("Counts\n(normalized by size factors)")
-ggsave("plots/total_counts_per_sample_normalized.pdf", plot=p, width=7, height=10, units='cm')
+ggsave("plots/tut-3/total_counts_per_sample_normalized.pdf", plot=p, width=7, height=10, units='cm')
 
 
-# Run the whole analysis
-dds_2 <- DESeq(dds) # saving to dds_2 here, usually not done
 ```
 
 # Statistical testing
