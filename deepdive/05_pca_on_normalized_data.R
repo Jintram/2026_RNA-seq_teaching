@@ -6,13 +6,15 @@
 # This script builds on the normalization from 01_normalization_size_factors.R,
 # re-creating the DESeq2 object to then apply VST and run PCA.
 
-source("deepdive/00_load_data.R")
+source("deepdive/00_a_load_data.R")
 # - count_data_synth
 # - count_data_real
 # - count_data_synth_long
 # - count_data_real_long
+source("deepdive/00_b_calculate_dispersions.R")
 # - df_dispersion_synth
 # - df_dispersion_real
+
 
 library(tidyverse)
 library(ggplot2)
