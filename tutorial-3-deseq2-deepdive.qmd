@@ -136,6 +136,8 @@ final dispersion estimates
 fitting model and testing
 ```
 
+XXXXXXXXX
+
 What happens during the DESeq2 analysis?
 
 1. **Normalization using size factors**
@@ -339,7 +341,7 @@ ggsave(
 
 # Calculate dispersions
 
-
+XXXXXX
 
 ```{r}
 # Information about the dispersion of gene counts plays a big role in
