@@ -1,1 +1,579 @@
+---
+title: "DESeq2 Deep Dive"
+format: html
+editor: visual
+---
 
+# Load data
+
+```{r}
+# Loads two example datasets;
+# - Synthetic one that was generated in main dir of this repo
+# - Example dataset GLDS38, see https://osdr.nasa.gov/bio/repo/data/studies/OSD-38 (pre-processed to counts)
+
+# this script yields
+# - count_data_synth
+# - count_data_real
+# - count_data_synth_long
+# - count_data_real_long
+```
+
+```{r}
+# Import the table
+count_data_synth <- read.table("data_frozen/count_table.tsv", 
+                         sep = "\t", 
+                         header = TRUE, 
+                         row.names = 1, 
+                         check.names = FALSE)
+# Also import real data (spaceflight)
+# (Downloaded from https://github.com/mishapaauw/RNA-seq-workshop/tree/main/data
+# where Misha created a downsampled version of the original data.)
+count_data_real <- read.csv("/Users/m.wehrens/Data_UVA/example-datasets/2026_RNAseq-Misha/GLDS38_raw_counts.csv",
+                            row.names=1)
+count_data_real_meta <- read.csv("/Users/m.wehrens/Data_UVA/example-datasets/2026_RNAseq-Misha/samples_to_condition.csv",
+                          row.names=1)
+print("Loaded count_data_synth and count_data_real")
+```
+
+```{r}
+# make the format long
+count_data_synth_long <- count_data_synth %>%
+    rownames_to_column(var="gene") %>%
+    pivot_longer(-gene, 
+                names_to = "condition",
+                values_to = "counts") 
+    
+count_data_real_long <- count_data_real %>%
+    rownames_to_column(var="gene") %>%
+    pivot_longer(-gene, 
+                names_to = "sample",
+                values_to = "counts") %>%
+    # set condition to FLT or GC, based on presence of _FLT_ or _GC_ string in condtion column
+    mutate(condition = case_when(
+        str_detect(sample, "_FLT_") ~ "FLT",
+        str_detect(sample, "_GC_") ~ "GC",
+        TRUE ~ sample
+    ))
+print("Formatted data in long format, count_data_synth_long, count_data_real_long")
+```
+
+# Calculate dispersions
+
+```{r}
+# Information about the dispersion of gene counts plays a big role in
+# the DESeq2 analysis.
+#
+# Dispersion (~variability) can be quantified in multiple way.
+# 
+# Here, we calculate the sd and mean, and additionally "alpha".
+# Alpha is (variance-mean)/mean^2).
+
+# this script yields
+# - df_dispersion_synth
+# - df_dispersion_real
+```
+
+```{r}
+# now calculate mean, variance and sd
+df_dispersion_synth <- count_data_synth_long %>%      
+    group_by(gene) %>%
+    summarise(mean = mean(counts),
+              sd   = sd(counts),
+              variance = var(counts)) %>%
+    mutate(alpha = (variance-mean)/mean^2)
+    
+df_dispersion_real <- count_data_real_long %>%      
+    group_by(gene) %>%
+    summarise(mean = mean(counts),
+              sd   = sd(counts),
+              variance = var(counts)) %>%
+    mutate(alpha = (variance-mean)/mean^2)
+print("Calculated dispersion data frame, df_dispersion_synth, df_dispersion_real")
+```
+
+# Normalization: size factors
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+
+library(DESeq2)
+```
+
+## Total reads per sample
+
+```{r}
+# First determine total reads per sample
+df_total_reads <- count_data_real_long |>
+    group_by(sample) |>
+    summarize(total_counts = sum(counts))
+    
+# Now plot in bar graph
+p <- df_total_reads |>
+  mutate(sample=str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+  ggplot(aes(x=sample, y=total_counts)) +
+    geom_bar(stat="identity") + 
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# p    
+# save
+ggsave("plots/total_counts_per_sample.pdf", plot=p, width=7, height=7, units='cm')
+```
+
+## Estimate size factors manually
+
+```{r}
+# Estimate the "size factors"
+# Create reference sample; geometric mean
+df_size_factors <- count_data_real_long |>  
+  # Calculate geometric means of gene values
+  group_by(gene) |>
+  mutate(geom_mean = median(prod(counts)^(1/(length(counts))))) |>
+  ungroup() |>
+  # Now normalize the counts by geom mean
+  mutate(counts_norm = counts/geom_mean) |>
+  # And calculate median normalized counts (=size factor)
+  group_by(sample) |>
+  summarize(size_factor = median(counts_norm, na.rm=TRUE))
+
+# now plot those
+p <- df_size_factors |>
+  mutate(sample=str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+  ggplot(aes(x=sample, y=size_factor)) +
+  geom_bar(stat="identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# p    
+# save
+ggsave("plots/size_factors_per_sample.pdf", plot=p, width=7, height=7, units='cm')
+```
+
+## Compare manual size factors with DESeq2
+
+```{r}
+# Let's see how well this matches DESeq2's assessment
+dds <- DESeqDataSetFromMatrix(countData = count_data_real,
+                              colData   = count_data_real_meta,
+                              design    = ~ condition)
+dds <- estimateSizeFactors(dds)
+the_sizefactors <- sizeFactors(dds)
+df_size_factors_deseq2 <- data.frame(
+  size_factor = unname(the_sizefactors),
+  sample = names(the_sizefactors))
+
+# now comparison
+df_size_factors_all <-  
+  rbind( df_size_factors |> mutate(origin="manual"), 
+        df_size_factors_deseq2 |> mutate(origin = "deseq2"))
+# now plot
+p <- df_size_factors_all |>
+  mutate(sample = str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+  ggplot(aes(x = sample, y = size_factor, fill = origin)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  scale_fill_manual(values = c("manual" = "black", "deseq2" = "red"))
+# p
+ggsave("plots/size_factors_manual_vs_deseq2.pdf", plot = p, width = 9, height = 7, units = "cm")
+
+# We can now also get normalized count matrix from deseq2
+normalized_counts <- counts(dds, normalized=TRUE)
+# Which doesn't have all sample totals equal
+colSums(normalized_counts)
+```
+
+## Normalized count totals and full DESeq2 analysis
+
+```{r}
+# Also in the overall DESeq2 analysis, dispersion-stablization is used
+# (See also https://hbctraining.github.io/Intro-to-DGE/lessons/04b_DGE_DESeq2_analysis.html)
+
+# So we have
+# - Size factor correction
+# - Dispersion correction
+
+# Plot, remind ourselves that also the per-sample count normalization went well
+normalized_counts_sampletotals <- colSums(normalized_counts)
+p <- 
+  data.frame(
+    counts = unname(normalized_counts_sampletotals),
+    sample = names(normalized_counts_sampletotals)
+  ) |>
+  mutate(sample = str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+  ggplot(aes(x = sample, y = counts)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("Sample") + ylab("Counts\n(normalized by size factors)")
+ggsave("plots/total_counts_per_sample_normalized.pdf", plot=p, width=7, height=10, units='cm')
+
+
+# Run the whole analysis
+dds_2 <- DESeq(dds) # saving to dds_2 here, usually not done
+```
+
+# Variance, mean, and dispersion
+
+## Variance versus mean
+
+```{r}
+# DESeq2 has a dispersion estimate parameter, alpha, defined by
+# var(K) = mu + alpha * mu^2
+# Thus
+# alpha = (var(K)-mu) / mu^2
+              
+# Now plot variance versus mean
+#
+# Very nice source of information:
+# https://hbctraining.github.io/DGE_workshop/lessons/01_DGE_setup_and_overview.html#rna-seq-count-distribution
+# The red line gives the poisson relationship of the mean and variance
+# The blue line gives the negative binominal relationship between mean and variance
+fn_NBvariance <- function(mu, alpha) {
+    return(mu + alpha * mu^2)
+}
+MY_ALPHA = 1/100
+ggplot(df_dispersion, aes(x=mean, y=variance)) +
+    geom_point() + 
+    geom_abline(slope=1, intercept=0, color='red') +
+    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA), color='blue') +
+    scale_x_log10() + scale_y_log10() + 
+    theme_bw() +
+    xlab('Mean gene expression (all conditions)') +
+    ylab('Variance in gene expression (all conditions)')
+```
+
+## Dispersion estimate plot
+
+```{r}
+# Now plot (var(K)-mu) / mu^2 versus mean
+# This produces a similar plot to the dispresion estimate plot of DESeq2
+ggplot(df_dispersion, aes(x=mean, y=alpha)) +
+    geom_point() +
+    scale_x_log10() + scale_y_log10(limits=c(1e-8, 10))+
+    xlab("mean") + ylab("dispersion estimate\nalpha = (var(K)-mu) / mu^2")
+
+# Note furthermore that DESeq2 selects the top-variance genes for taking 
+# along in the PCA. 
+```
+
+## Fit dispersion on real data
+
+```{r}
+# Let's first fit the dispersion coefficient
+# Fit alpha in: variance = mu + alpha * mu^2
+# Use nls on log-transformed values for a better fit across the wide range
+df_fit <- df_dispersion_real %>% filter(mean > 0, variance > 0)
+fit <- nls(log(variance) ~ log(mean + alpha * mean^2),
+           data = df_fit,
+           start = list(alpha = 0.01),
+           control = nls.control(maxiter = 200))
+MY_ALPHA_real <- coef(fit)[["alpha"]]
+cat("Fitted alpha:", MY_ALPHA_real, "\n")
+# 
+p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
+    geom_point(color='grey') + 
+    geom_abline(slope=1, intercept=0, color='red', size=1) +
+    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA_real), color='blue', size=1) +
+    scale_x_log10() + scale_y_log10() + 
+    theme_classic() +
+    annotate("text", x = 0.1, y = max(df_dispersion_real$variance)*.95, 
+             label = paste0("variance = mean + alpha * mean^2\nalpha =",round(MY_ALPHA,2)),
+             hjust = 0, vjust = 1) +
+    xlab('Mean gene expression (all conditions)') +
+    ylab('Variance in gene expression (all conditions)') +
+    ggtitle('Spaceflight data')
+# p
+# export to directory plots/
+ggsave("plots/variance_mean_real_data.pdf", plot=p, width=10, height=10, units='cm')
+```
+
+# Log2 fold change
+
+```{r}
+# Calculate means and log2fc per condition
+count_data_real_long_l2fc <- count_data_real_long |>
+    # first gather averages
+    group_by(condition, gene) |>
+    summarise(gene_average = mean(counts)) |>    
+    # now determine FC
+    filter(gene_average>0) |>
+    group_by(gene) |>
+    pivot_wider(names_from = condition, values_from = gene_average) |>
+    mutate(FC = FLT/GC, 
+            L2FC = log2(FC)) |>
+    arrange(desc(L2FC))
+```
+
+```{r}
+# now make a small plot for gene="AT2G41355"
+MYGENE = "AT2G41355"
+p <- count_data_real_long |> 
+    filter(gene==MYGENE) |>
+    ggplot(aes(x=condition, y=counts))+
+        geom_jitter(height = 0, width = 0.1) +
+        theme_classic() +
+        ggtitle(MYGENE)
+ggsave("plots/gene_example_highl2fc.pdf", plot=p, width=7, height=7, units='cm')
+```
+
+# PCA fundamentals
+
+## PCA on synthetic count data
+
+```{r}
+# PCA expects samples as rows, genes as columns, so we transpose.
+# We also scale and center the data (z-scores), which is standard practice.
+
+pca_result <- prcomp(t(count_data_synth), center = TRUE, scale. = TRUE)
+
+# How much variance does each PC explain?
+pca_var <- summary(pca_result)$importance
+print(pca_var[, 1:4])
+```
+
+## Scree plot
+
+```{r}
+# Plot: variance explained per PC
+df_var_explained <- data.frame(
+    PC = paste0("PC", 1:ncol(pca_var)),
+    variance_explained = pca_var["Proportion of Variance", ]
+) |> mutate(PC = factor(PC, levels = PC))
+
+p_scree <- ggplot(df_var_explained, aes(x = PC, y = variance_explained)) +
+    geom_bar(stat = "identity") +
+    theme_classic() +
+    ylab("Proportion of variance explained") +
+    ggtitle("Scree plot - synthetic data")
+p_scree
+```
+
+## PCA scatter (PC1 vs PC2)
+
+```{r}
+df_scores <- as.data.frame(pca_result$x) |>
+    mutate(sample = rownames(pca_result$x),
+           condition = ifelse(str_detect(sample, "^WT"), "WT", "CompoundX"))
+
+p_pca <- ggplot(df_scores, aes(x = PC1, y = PC2, color = condition)) +
+    geom_point(size = 3) +
+    theme_classic() +
+    xlab(paste0("PC1 (", round(pca_var["Proportion of Variance", 1] * 100, 1), "%)")) +
+    ylab(paste0("PC2 (", round(pca_var["Proportion of Variance", 2] * 100, 1), "%)")) +
+    ggtitle("PCA - synthetic data")
+p_pca
+```
+
+## Gene loadings
+
+```{r}
+# The rotation matrix contains the loadings (weights) per gene per PC.
+
+df_loadings <- as.data.frame(pca_result$rotation) |>
+    rownames_to_column("gene") |>
+    mutate(PC1_abs = abs(PC1), PC2_abs = abs(PC2))
+
+# Top 15 genes by PC1 loading
+top_pc1 <- df_loadings |> arrange(desc(PC1_abs)) |> head(15)
+print("Top genes contributing to PC1:")
+print(top_pc1 |> select(gene, PC1))
+
+# Top 15 genes by PC2 loading
+top_pc2 <- df_loadings |> arrange(desc(PC2_abs)) |> head(15)
+print("Top genes contributing to PC2:")
+print(top_pc2 |> select(gene, PC2))
+
+# Plot loadings for PC1
+p_loadings <- top_pc1 |>
+    mutate(gene = fct_reorder(gene, PC1)) |>
+    ggplot(aes(x = gene, y = PC1)) +
+    geom_bar(stat = "identity") +
+    coord_flip() +
+    theme_classic() +
+    ggtitle("Top 15 gene loadings on PC1")
+p_loadings
+```
+
+## tpiA loading across all PCs
+
+```{r}
+df_tpiA <- df_loadings |>
+    filter(gene == "tpiA") |>
+    select(gene, starts_with("PC"), -PC1_abs, -PC2_abs) |>
+    pivot_longer(-gene, names_to = "PC", values_to = "loading") |>
+    mutate(PC = factor(PC, levels = paste0("PC", 1:8)))
+
+p_tpiA <- ggplot(df_tpiA, aes(x = PC, y = loading)) +
+    geom_bar(stat = "identity") +
+    theme_classic() +
+    ggtitle("tpiA loading across all PCs")
+p_tpiA
+```
+
+# PCA on normalized data
+
+```{r}
+# PCA on normalized (variance-stabilized) data
+# This builds on the normalization from the size factors section,
+# re-creating the DESeq2 object to then apply VST and run PCA.
+```
+
+## Variance vs mean (raw)
+
+```{r}
+# There tends to be a trend in the variance, compared to mean expression values.
+p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
+    geom_point(color='grey') + 
+    scale_x_log10() + scale_y_log10() + 
+    theme_classic() +
+    xlab('Mean gene expression (all conditions)') +
+    ylab('Variance in gene expression (all conditions)') +
+    ggtitle('Spaceflight data')
+p
+ggsave("plots/variance_mean_real_data_raw.pdf", plot=p, width=10, height=10, units='cm')
+```
+
+## Z-score normalization
+
+```{r}
+# If we were to use z-scores
+# (Often done when using PCAs)
+count_data_real_long_zscore <- count_data_real_long |>
+  group_by(gene) |>
+  mutate(counts_z = counts/sd(counts)) |>
+  ungroup()
+# Plot our gene
+MYGENE = "AT2G41355"
+p <- count_data_real_long_zscore |> 
+    filter(gene==MYGENE) |>
+    ggplot(aes(x=condition, y=counts_z))+
+        geom_jitter(height = 0, width = 0.1) +
+        theme_classic() +
+        ggtitle(MYGENE)
+p
+```
+
+```{r}
+# now calculate dispersions z
+df_dispersion_real_zscore <- count_data_real_long_zscore |>
+    group_by(gene) |>
+    summarise(mean = mean(counts_z),
+              sd   = sd(counts_z),
+              variance = var(counts_z)) |>
+    mutate(alpha = (variance-mean)/mean^2)
+# now plot dispersions z
+p <- ggplot(df_dispersion_real_zscore, aes(x=mean, y=variance)) +
+    geom_point(color='grey') + 
+    scale_x_log10() + scale_y_log10() + 
+    theme_classic() +
+    xlab('Mean gene expression (all conditions)') +
+    ylab('Variance in gene expression (all conditions)') +
+    ggtitle('Spaceflight data, z-scores')
+p
+ggsave("plots/variance_mean_real_data_zscore.pdf", plot=p, width=10, height=10, units='cm')
+```
+
+```{r}
+# similarly, we'd see a trend if we'd take the log
+df_disperson_log <- count_data_real_long_zscore |>
+    mutate(      
+      log_counts   = log(counts+.1),
+      log_counts_z = log(counts_z+.1)) |>
+    group_by(gene) |>
+    summarise(
+      mean_z = mean(log_counts_z),
+      sd_z   = sd(log_counts_z),
+      variance_z = var(log_counts_z),
+      mean = mean(log_counts), 
+      sd = sd(log_counts),
+      variance = var(log_counts))
+# plot again
+p <- ggplot(df_disperson_log, aes(x=mean, y=variance)) +
+    geom_point(color='grey') + 
+    scale_x_log10() + scale_y_log10() + 
+    theme_classic() +
+    xlab('Mean gene expression (all conditions)') +
+    ylab('Variance in gene expression (all conditions)') +
+    ggtitle('Spaceflight data')
+p
+```
+
+## Variance-stabilizing transformation (VST)
+
+```{r}
+# So now let's check out how dispersions look using vst
+vsd <- vst(dds)
+vst_counts <- assay(vsd)
+df_dispersion_ddsvst <- vst_counts |>
+    as.data.frame() |>
+    rownames_to_column("gene") |>
+    pivot_longer(-gene, names_to = "sample", values_to = "counts") |>
+    group_by(gene) |>
+    summarise(mean = mean(counts),
+              sd   = sd(counts),
+              variance = var(counts)) |>
+    mutate(alpha = (variance - mean) / mean^2)
+# now plot
+p <- ggplot(df_dispersion_ddsvst, aes(x=mean, y=variance)) +
+    geom_point(color='grey') + 
+    scale_x_log10() + scale_y_log10() + 
+    theme_classic() +
+    xlab('Mean gene expression (all conditions)') +
+    ylab('Variance in gene expression (all conditions)') +
+    ggtitle('Spaceflight data, variance stabilized')
+p
+ggsave("plots/variance_mean_real_data_vst.pdf", plot=p, width=10, height=10, units='cm')
+```
+
+## PCA on VST data
+
+```{r}
+# now a pca plot by deseq2
+pca_res <- plotPCA(vsd, intgroup = "condition", returnData = TRUE)
+p <- ggplot(pca_res, aes(x=PC1, y=PC2, shape=condition,
+                      color=condition)) +
+    geom_point(size=3) +
+    theme_classic() +
+    xlab(paste0("PC1 (", round(100*pca_res$percentVar[1], 1), "%)")) +
+    ylab(paste0("PC2 (", round(100*pca_res$percentVar[2], 1), "%)")) +
+    ggtitle("PCA on vst data") +
+    scale_color_manual(values=c("space_flight"="darkblue", "ground_control"="brown")) +
+    theme(legend.position = "none")
+p
+ggsave("plots/pca_deseq2.pdf", plot=p, width=10, height=10, units='cm')
+```
+
+## Normalized count totals (recap)
+
+```{r}
+# Also in the overall DESeq2 analysis, dispersion-stablization is used
+# (See also https://hbctraining.github.io/Intro-to-DGE/lessons/04b_DGE_DESeq2_analysis.html)
+
+# So we have
+# - Size factor correction
+# - Dispersion correction
+
+# Plot, remind ourselves that also the per-sample count normalization went well
+normalized_counts_sampletotals <- colSums(normalized_counts)
+p <- 
+  data.frame(
+    counts = unname(normalized_counts_sampletotals),
+    sample = names(normalized_counts_sampletotals)
+  ) |>
+  mutate(sample = str_remove(sample, "Atha_WT_Col_0_sl_")) |>
+  ggplot(aes(x = sample, y = counts)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("Sample") + ylab("Counts\n(normalized by size factors)")
+ggsave("plots/total_counts_per_sample_normalized.pdf", plot=p, width=7, height=10, units='cm')
+
+
+# Run the whole analysis
+dds_2 <- DESeq(dds) # saving to dds_2 here, usually not done
+```
+
+# Statistical testing
+
+```{r}
+```
