@@ -1,4 +1,5 @@
-################################################################################
+
+#%% ###############################################################################
 
 source("deepdive/import_data.R")
 # - count_data_synth
@@ -13,7 +14,7 @@ library(ggplot2)
 
 library(DESeq2)
 
-################################################################################
+#%% ################################################################################
 # Let's also do some manual DESeq2-similar things
 # First determine total reads per sample
 df_total_reads <- count_data_real_long |>
@@ -32,7 +33,7 @@ p <- df_total_reads |>
 ggsave("plots/total_counts_per_sample.pdf", plot=p, width=7, height=7, units='cm')
 
 
-################################################################################
+#%% ################################################################################
 # Now normalize them in DESeq2's way
 
 # Estimate the "size factors"
@@ -60,7 +61,7 @@ p <- df_size_factors |>
 ggsave("plots/size_factors_per_sample.pdf", plot=p, width=7, height=7, units='cm')
 
 
-################################################################################
+#%% ################################################################################
 # Let's see how well this matches DESeq2's assessment
 dds <- DESeqDataSetFromMatrix(countData = count_data_real,
                               colData   = count_data_real_meta,
@@ -91,7 +92,7 @@ normalized_counts <- counts(dds, normalized=TRUE)
 # Which doesn't have all sample totals equal
 colSums(normalized_counts)
 
-################################################################################
+#%% ################################################################################
 # PART II, PCA normalization
 # See `deepdive/pca_example.R` for pca fundamentals
 
@@ -161,7 +162,7 @@ p <- ggplot(df_disperson_log, aes(x=mean, y=variance)) +
     ggtitle('Spaceflight data')
 p
 
-################################################################################
+#%% ################################################################################
 
 # So now let's check out how dispersions look using vst
 vsd <- vst(dds)
@@ -200,7 +201,7 @@ p <- ggplot(pca_res, aes(x=PC1, y=PC2, shape=condition,
 p
 ggsave("plots/pca_deseq2.pdf", plot=p, width=10, height=10, units='cm')
 
-################################################################################
+#%% ################################################################################
 # Also in the overall DESeq2 analysis, dispersion-stablization is used
 # (See also https://hbctraining.github.io/Intro-to-DGE/lessons/04b_DGE_DESeq2_analysis.html)
 

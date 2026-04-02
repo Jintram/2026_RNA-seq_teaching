@@ -1,2 +1,3 @@
 data/*
 /.quarto/
+.DS_Store*
