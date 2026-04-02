@@ -1,5 +1,5 @@
 
-source("deepdive/import_data.R")
+source("deepdive/00_load_data.R")
 # yields:
 # - count_data_synth
 # - count_data_real
