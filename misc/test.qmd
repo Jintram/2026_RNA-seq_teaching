@@ -1,0 +1,9 @@
+---
+title: "DESeq2 Deep Dive"
+format: html
+editor: visual
+---
+
+
+
+This is a test ^[Testing footnote syntax].
