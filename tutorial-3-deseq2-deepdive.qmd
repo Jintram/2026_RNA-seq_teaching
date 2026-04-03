@@ -450,6 +450,12 @@ p + custom_adjust_fonts(12)
 
 ```
 
+
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+add mean-dispersion relationship
+quantified in different ways
+
+
 ## DESeq2's handling of dispersion
 
 Estimating dispersion (variabillity) play a big role in DESeq2's approach. Four of DESeq2's messages refer to this process.
