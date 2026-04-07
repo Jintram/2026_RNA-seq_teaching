@@ -2,16 +2,19 @@
 title: "DESeq2 Deep Dive"
 format: html
 editor: visual
+knitr:
+  opts_chunk:
+    warning: false
 ---
 
 # Setting up
 
 ## Acknowledgements
 
-Aside from the [DESeq2 paper itself](http://doi.org/10.1186/s13059-014-0550-8), additional [explanation](https://hbctraining.github.io/Intro-to-DGE/schedule/links-to-lessons.html) from [Mistry et al.](https://doi.org/10.5281/zenodo.4783480) from the Harvard Chan Bioinformatics Core was very helpfull in compiling this tutorial.
+Aside from the [DESeq2 paper itself](http://doi.org/10.1186/s13059-014-0550-8), additional [explanation](https://hbctraining.github.io/Intro-to-DGE/schedule/links-to-lessons.html) from [Mistry et al.](https://doi.org/10.5281/zenodo.4783480) from the Harvard Chan Bioinformatics Core was very helpfull in compiling this material.
 
-In addition, I used Claude Opus 4.6's understanding of DESeq2, and checked 
-things in the original [DESeq2 source code](https://github.com/thelovelab/DESeq2) (15f2ec9).
+In addition, I used Claude Opus 4.6's understanding of DESeq2, which I fact-check with above
+resources and in the original [DESeq2 source code](https://github.com/thelovelab/DESeq2) (15f2ec9).
 
 ```{=html}
 <!--
@@ -31,6 +34,7 @@ library(DESeq2)
 library(pheatmap)
 library(ggrepel)
 library(scales)
+library(patchwork)
 
 # Set up output directory
 if (!dir.exists("plots/tut-3")) {
@@ -46,7 +50,7 @@ Define some functions and settings to make our plots look fancy later.
 # Bars should be black per default
 update_geom_defaults("bar", list(fill = "black"))  # sets it globally for session
 
-# Bigger arial font 
+# Custom adjust font function (to be used with ggplot2)
 custom_adjust_fonts <- function(size = 15, family = "Arial") {
   theme(
     text             = element_text(size = size, family = family),
@@ -60,7 +64,7 @@ custom_adjust_fonts <- function(size = 15, family = "Arial") {
   )
 }
 
-# Some bar graph settings I prefer
+# Custom function to set bar graph settings I prefer (to be used with ggplot2)
 custom_theme_bar <- function() {
   list(
     theme_classic(),
@@ -144,6 +148,8 @@ final dispersion estimates
 fitting model and testing
 ```
 
+<font color=red>
+
 XXXXXXXXX
 
 What happens during the DESeq2 analysis?
@@ -153,15 +159,44 @@ What happens during the DESeq2 analysis?
 3.  **Estimate dispersion per gene**
 4.  \*\*
 
+</font>
+
 # Normalization: size factors
 
-If sample 1 in total has 5000 reads, and sample 2 in total has 10000 reads, and we consider a gene X, we expect that gene to have more reads in sample 2. In fact, a good guess would be that gene X has 2x as many reads in sample 2.
+### A simple approach
+
+If sample 1 in total has 5000 reads, and sample 2 in total has 10000 reads
+(a higher "sequencing depth"), and we consider a gene X, we expect that gene to 
+have more reads in sample 2. In fact, a good guess would be that gene X has 2 times as many reads in sample 2.
+This is of course not due to biology, but due to the fact that we sequenced
+sample 2 more.
 
 So, to more honestly compare samples, we need to *normalize* for the amount of reads in each samples.
 
 When we have count table where rows correspond to genes, and columns to samples, we could simply divide each column by its total, and work with those values. Or, one step better, do that, and multiply with the mean of total sample counts, such that the values we end up with are in the same range as those with which we started.
 
-DESeq2 takes a little more sophisticated appraoch. The total counts in a sample can be skewed by gene composition, e.g. a few highly expressed differentially expressed (DE) genes can affect total counts \[[1](https://hbctraining.github.io/Intro-to-DGE/lessons/02_DGE_count_normalization.html)\], \[[2](https://link.springer.com/article/10.1186/gb-2010-11-10-r106)\]. It therefor calculates a pseudo-reference sample, with arithmetic averages over the samples for each gene, then normalizes each gene by the reference sample, and then calculates the median normalized expression per sample. This somewhat complex scheme is summarized below:
+### DESeq2's approach
+
+DESeq2 takes a little more sophisticated appraoch. 
+They make the argument that we're intersted in genes that show changes due to regulation. 
+
+_"The total number of reads, $\sum_i k_{i,j}$, may seem to be a good measure of sequencing depth and hence a reasonable choice for $s_j$. Experience with real data, however, shows this not always to be the case, because a few highly and differentially expressed genes may have strong influence on the total read count, causing the ratio of total read counts not to be a good estimate for the ratio of expected counts."_
+-- ([Anders & Huber, 2010)](https://doi.org/10.1186/gb-2010-11-10-r106))
+
+When there are a few highly-abundant genes are upregulated, 
+the concentrations of the other genes in the cells will go down, 
+as the size of the total transcriptome remains similar. (And conversely,
+if highly-abundant genes go down, other genes' concentrations will go up.)
+
+DESeq2 thus tries to normalize both for sequencing depth, and this second order
+effect.
+It assumes that most gene don't change, and calculates 
+the median change in counts over all genes as a 'size factor' that
+reflects sequencing depth and the second order effect.
+Changes in gene expression that remain left after normalization with
+the size factor then should reflect change that we're intersted in.
+
+Technically, DESeq2 calculates a pseudo-reference sample, with arithmetic averages over the samples for each gene, then normalizes each gene by the reference sample, and then calculates the median normalized expression per sample. This somewhat complex scheme is summarized below:
 
 | Gene | sampleA | sampleB | Pseudo-reference sample | sampleA/ref | sampleB/ref |
 |------------|------------|------------|----------------|------------|------------|
@@ -220,22 +255,26 @@ df_size_factors <- count_data_real_long |>
   summarize(size_factor = median(counts_norm, na.rm=TRUE))
 
 # now plot those
-p <- df_size_factors |>
+p2 <- df_size_factors |>
   mutate(sample=str_remove(sample, "Atha_WT_Col_0_sl_")) |>
   ggplot(aes(x=sample, y=size_factor)) +
   geom_bar(stat="identity") +
-  xlab('Sample') + ylab('Size factor')
+  xlab('Sample') + ylab('Size factor') +
   custom_theme_bar()
 # save
 ggsave("plots/tut-3/size_factors_per_sample.pdf", plot=p, width=10, height=16, units='cm', device=cairo_pdf)
-# show
-p + custom_adjust_fonts(12)
+
+# show side by side with totals
+(p + custom_adjust_fonts(12) + ggtitle("Total read count")) + 
+(p2 + custom_adjust_fonts(12) + ggtitle("Size factor"))
 
 ```
 
+As you can see, relative changes in these quantities between samples are similar but not equal.
+
 ## Compare manual size factors with DESeq2
 
-As a sanity check, let's see whether this complies with DESeq2:
+As a sanity check, let's see whether this matches DESeq2's calculation:
 
 ```{r}
 
@@ -270,6 +309,9 @@ ggsave("plots/tut-3/size_factors_manual_vs_deseq2.pdf", plot = p, width = 10, he
 
 p + custom_adjust_fonts(12)
 ```
+
+The agreement between these bars shows that our manual calculation of the 
+size factors exactly matches DESeq2's calculation.
 
 ## Manually normalize genes and see effect
 
@@ -308,7 +350,7 @@ p + custom_adjust_fonts(12)
 
 In the plot above, the red points better reflect the true transcript concentrations compared between the samples.
 
-As a final point, note that the total counts for each sample are not after DESeq2's normalization.
+As a final point, note that the total counts for each sample are not equal after DESeq2's normalization.
 
 ```{r}
 # Let's do a full run
@@ -330,14 +372,22 @@ p <- count_data_real_long_normalized |>
     theme_classic() +
     xlab('Condition') + ylab('Total counts') +
     scale_fill_manual(values = c("counts" = "grey", "normalized_count" = "black")) + 
-    custom_theme_bar()
+    custom_theme_bar() + 
+    theme(legend.position = "none")
 
 ggsave(
   "plots/tut-3/normalization_comparison.pdf", 
   plot=p, width=20, height=15, units='cm', device=cairo_pdf
   )
 
+p + custom_adjust_fonts(12)
+
 ```
+
+In the plot above, the grey colored bars indicate total counts per sample before 
+normalization, the black bars indicate total counts after normalization.
+As you can see, normalized counts (black) are (somewhat) more equal in height, 
+but still different from each other.
 
 # Calculate dispersions
 
@@ -352,6 +402,8 @@ In the example with gene A below, we can say with high likelyhood that the gene 
 in the example with gene B, we can be less sure of that.
 
 ```{r}
+#| code-fold: true
+
 set.seed(30)
 
 df_example_simpleDE <-
@@ -390,12 +442,21 @@ ggsave("plots/tut-3/dispersion_example.pdf", plot=p, width=13, height=12, units=
 p + custom_adjust_fonts(12)
 ```
 
-Simply put, DESeq2 will try to estimate the dispersion in each gene's counts, and use that 
-estimate to perform statistics and estimate the likelyhood that there is differential expression
-between conditions. 
-Or, in more statistically sound terms, it will calculate the p-value based on those estimates, 
-which reflects the likelyhood that H0 (no difference between conditions),
-is true. If that probability is low, we can reject H0, and say that there is likely a difference between conditions.
+Trying to answer which genes are truely differentially expresssed, 
+is our reason to use a tool like DESeq2, 
+which will estimate statistics to assess whether changes are 
+"random" or due to biology.
+
+To achieve this, simply put, DESeq2 will estimate the dispersion for each gene
+that is attributed to "randomness", such that it can estimate whether 
+observed changes lie outside the expected random variability, and are thus likely to be 
+related to the different experimental conditions.
+
+Or, in more technical terms, it will calculate p-values based on dispersion estimates, 
+which reflect the likelyhood that H0 (no difference between conditions),
+is true. 
+If that probability is low (typically $p<0.05$ or $<0.01$), 
+we can reject H0, and say that there is likely a difference between conditions.
 
 The method by which this is done is quite a bit more complicated, but that's the 
 gist of it.
@@ -414,7 +475,7 @@ df_dispersion_synth <- count_data_synth_long %>%
     summarise(mean = mean(counts),
               sd   = sd(counts),
               variance = var(counts)) %>%
-    # include "alpha", which we'll use later
+    # also calculate "alpha", which we'll use later
     mutate(alpha = (variance-mean)/mean^2)
     
 # Then for the real data
@@ -424,7 +485,7 @@ df_dispersion_real <- count_data_real_long %>%
     summarise(mean = mean(counts),
               sd   = sd(counts),
               variance = var(counts)) %>%
-    # include "alpha", which we'll use later
+    # also calculate "alpha", which we'll use later
     mutate(alpha = (variance-mean)/mean^2)
 ```
 
@@ -439,7 +500,7 @@ p <- df_dispersion_real |>
     geom_histogram(bins=100) +
     theme_classic() +
     scale_x_log10(labels = scales::label_comma()) +
-    xlab("Standard deviation") +
+    xlab("Standard deviation for a gene") +
     ylab("Times observed") +
     ggtitle("Spaceflight data") +
     custom_theme_bar()
@@ -449,6 +510,104 @@ ggsave("plots/tut-3/dispersion_histogram.pdf", plot=p, width=10, height=10, unit
 p + custom_adjust_fonts(12)
 
 ```
+
+If we plot the standard deviation versus the mean, we'll see that there's a clear
+dependency of the sd on the mean.
+
+```{r}
+# sd versus mean relationship
+
+p <- df_dispersion_real |>
+    ggplot(aes(x=mean, y=sd)) +
+      # trendline
+    geom_smooth(method='lm', formula = y ~ x, color='red') +
+    # points
+    geom_point() +
+    # R = ..
+    annotate("text", x = 0.1, y = max(df_dispersion_real$sd)*.95, 
+             label = paste0("R = ", round(cor(df_dispersion_real$mean, df_dispersion_real$sd), 2)),
+             hjust = 0, vjust = 1) +
+    theme_classic() +
+    xlab("Mean expression") +
+    ylab("Standard deviation") +
+    ggtitle("Spaceflight data") 
+    
+ggsave("plots/tut-3/dispersion_sd_vs_mean.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
+
+p + custom_adjust_fonts(12)
+
+```
+
+What DESeq2 will try to do is quantify this trend, 
+and use that to estimate each gene's dispersion due to "randomness", 
+such that it can determine likelyhood of H0.
+
+Specifically, DESeq2 assumes gene count values show statistics that are 
+consistent with a negative binominal distribution.
+For such a distribution, the variance and mean are related by the following
+relationship:
+
+$$
+\text{variance} = \mu + \alpha \cdot \mu^2
+$$ 
+
+With $\alpha$ a free parameter that determines how the relationship looks precisely.
+Let's see how consistent the data is with this assumption:
+
+```{r}
+# The function describing variance = mu + alpha * mu^2
+fn_NBvariance <- function(mu, alpha) {
+    return(mu + alpha * mu^2)
+}
+
+# Let's first fit the dispersion coefficient
+# Fit alpha in: variance = mu + alpha * mu^2
+# Use nls on log-transformed values for a better fit across the wide range
+df_fit <- df_dispersion_real %>% filter(mean > 0, variance > 0)
+fit <- nls(log(variance) ~ log(mean + alpha * mean^2),
+           data = df_fit,
+           start = list(alpha = 0.01),
+           control = nls.control(maxiter = 200))
+MY_ALPHA_real <- coef(fit)[["alpha"]]
+cat("Fitted alpha:", MY_ALPHA_real, "\n")
+
+# Now plot
+p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
+    geom_point(color='grey') + 
+    geom_density2d(color='black', bins=5) + 
+    geom_abline(slope=1, intercept=0, color='red', size=1) +
+    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA_real), color='blue', size=1) +
+    scale_x_log10() + scale_y_log10() + 
+    theme_classic() +
+    annotate("text", x = 0.1, y = max(df_dispersion_real$variance)*.95, 
+             label = paste0("variance = mean + alpha * mean^2\nalpha =",round(MY_ALPHA_real,2)),
+             hjust = 0, vjust = 1) +
+    xlab('Mean gene expression (all conditions)') +
+    ylab('Variance in gene expression (all conditions)') +
+    ggtitle('Spaceflight data')
+
+# export to directory plots/tut-3/
+ggsave("plots/tut-3/dispersion_variance_mean_real_data.pdf", plot=p, width=10, height=10, units='cm')
+
+p + custom_adjust_fonts(12)
+```
+
+
+DESeq2 tries to quantify this trend, combine it with information on the observed 
+dispersion of a gene, and then produces an updated dispersion estimate for 
+a each gene separately.
+
+As mentioned, these dispersion estimates are then used to 
+calculate p-values for the likelyhood of H0, and thus to determine which genes are likely differentially expressed.
+
+# Fitting gene expression to conditions
+
+EXPLAIN HOW EXPRESSION-CONDITION MODEL IS USED
+
+FIRST FOR ESTIMATING LFC
+THEN FOR DISPERSION ESTIMATES
+
+Throughout 
 
 
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -546,34 +705,7 @@ ggplot(df_dispersion_synth, aes(x=mean, y=alpha)) +
 
 ## Fit dispersion on real data
 
-```{r}
-# Let's first fit the dispersion coefficient
-# Fit alpha in: variance = mu + alpha * mu^2
-# Use nls on log-transformed values for a better fit across the wide range
-df_fit <- df_dispersion_real %>% filter(mean > 0, variance > 0)
-fit <- nls(log(variance) ~ log(mean + alpha * mean^2),
-           data = df_fit,
-           start = list(alpha = 0.01),
-           control = nls.control(maxiter = 200))
-MY_ALPHA_real <- coef(fit)[["alpha"]]
-cat("Fitted alpha:", MY_ALPHA_real, "\n")
-# 
-p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
-    geom_point(color='grey') + 
-    geom_abline(slope=1, intercept=0, color='red', size=1) +
-    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA_real), color='blue', size=1) +
-    scale_x_log10() + scale_y_log10() + 
-    theme_classic() +
-    annotate("text", x = 0.1, y = max(df_dispersion_real$variance)*.95, 
-             label = paste0("variance = mean + alpha * mean^2\nalpha =",round(MY_ALPHA,2)),
-             hjust = 0, vjust = 1) +
-    xlab('Mean gene expression (all conditions)') +
-    ylab('Variance in gene expression (all conditions)') +
-    ggtitle('Spaceflight data')
-# p
-# export to directory plots/tut-3/
-ggsave("plots/tut-3/variance_mean_real_data.pdf", plot=p, width=10, height=10, units='cm')
-```
+(..)
 
 # Log2 fold change
 
