@@ -393,6 +393,14 @@ but still different from each other.
 
 In the end, our aim is to know how changes in gene expression depend on the different conditions of our experiment.
 
+To understand changes in gene expression, we could simply calculate the 
+ratio of average expression in one condition, compared to the other.
+
+However, to be more precise and versatile (allowing for multiple conditions, e.g.), 
+DESeq2 fits constants that describe the statistics. Mean expression level,
+variability (dispersion), and the dependence on the condition are all fitted.
+
+
 To get an initial impression of this, DESeq2 fits constants that describe
 how conditions affect gene expression.
 
@@ -427,7 +435,7 @@ model <- count_data_real_long_normalized %>%
           # The actual fitting (negative binominal model)
           MASS::glm.nb(
             # The "model", describing q = beta0 + beta1 * condition_coded
-            formula = round(normalized_count) ~ condition_coded,
+            formula = normalized_count ~ condition_coded,
             # Gene data
             data = df
           ),
@@ -534,6 +542,43 @@ ggsave("plots/tut-3/manualfitting_log2fc_comparison.pdf", plot=p,
 p + custom_adjust_fonts(12)  
 ```
 
+
+```{r}
+
+# Comparing to a direct calculation
+df_l2fc_manual <- count_data_real_long_normalized |>
+    # first gather averages
+    group_by(condition, gene) |>
+    summarise(gene_average = mean(round(normalized_count))) |>    
+    # now determine FC
+    filter(gene_average>0) |>
+    group_by(gene) |>
+    pivot_wider(names_from = condition, values_from = gene_average) |>
+    mutate(FC = FLT/GC, 
+            L2FC = log2(FC)) |>
+    arrange(desc(L2FC))
+    
+# Add this to the comparison frame as well
+df_results_combined <- df_results_combined |>
+    left_join(df_l2fc_manual, by='gene')
+
+# and compare our fitting to our average l2fc in a scatter plot
+range_min = min(df_results_combined$L2FC, na.rm=TRUE)
+range_max = max(df_results_combined$L2FC, na.rm=TRUE)
+p <- df_results_combined  |>
+  ggplot(aes(x=L2FC, y=coefficient)) +
+    geom_point() +
+    theme_classic() +
+    xlab("Manual log2 fold change (average)") +
+    ylab("Coefficient from manual fit") +
+    geom_abline(slope=1, intercept=0, color='red', label="x=y") +
+    ggtitle("All data") +
+    custom_adjust_fonts() +
+    xlim(c(range_min, range_max)) +
+    ylim(c(range_min, range_max))
+
+p
+```
 WILL BE SOPHISTICATED LATER
 
 
