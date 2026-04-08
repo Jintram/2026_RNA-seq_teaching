@@ -19,6 +19,8 @@ Description of files:
 # In terminal, with quarto installed, use:
 quarto render tutorial-generate-synthetic-data.qmd --output-dir html/ --no-clean
 quarto render tutorial-deseq2-fakedata.qmd --output-dir html/ --no-clean
+quarto render tutorial-3-deseq2-deepdive.qmd --output-dir html/ --no-clean
+# quarto preview tutorial-3-deseq2-deepdive.qmd --output-dir html/ --no-clean
 ```
 
 Pre-rendered .html files are now included in the `html/` folder.

@@ -531,7 +531,7 @@ p <- p2 + p1
 ggsave("plots/tut-3/manualfitting_log2fc_comparison.pdf", plot=p, 
   width=20, height=10, units='cm', device=cairo_pdf)
   
-p + adjust_fonts(12)  
+p + custom_adjust_fonts(12)  
 ```
 
 WILL BE SOPHISTICATED LATER
