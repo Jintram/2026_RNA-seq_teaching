@@ -389,11 +389,161 @@ normalization, the black bars indicate total counts after normalization.
 As you can see, normalized counts (black) are (somewhat) more equal in height, 
 but still different from each other.
 
+# Estimate log fold changes
+
+In the end, our aim is to know how changes in gene expression depend on the different conditions of our experiment.
+
+To get an initial impression of this, DESeq2 fits constants that describe
+how conditions affect gene expression.
+
+For example, if we have the condition $x$ corresponding to either ground
+control ($x=0$) or space flight ($x=1$), we can fit gene expression $q_i$ for 
+any gene $i$ with
+
+$$
+q_i = \beta_{0,i} + \beta_{1,i} x
+$$
+
+The idea here is to fit $\beta$ such that it reflects the effect the effect
+the condition $x$ has on the final expression of gene $i$.
+
+We can perform an important part of this fitting procedure as follows:
+
+```{r}
+
+# Let's manually convert ("dummy-code") the condition to 0 (GC) or 1 (FLT)
+count_data_real_long_normalized <- count_data_real_long_normalized |>
+  mutate(condition_coded = ifelse(condition == "GC", 0, 1))
+
+# We use split-apply to fit each gene separately
+model <- count_data_real_long_normalized %>%
+  split(.$gene) %>%
+  lapply(
+    function(df) {
+      # We use try-catch to deal with edge-cases where there is no
+      # convergence or other issues, e.g. due to low counts or low variability
+      tryCatch(
+        expr = 
+          # The actual fitting (negative binominal model)
+          MASS::glm.nb(
+            # The "model", describing q = beta0 + beta1 * condition_coded
+            formula = round(normalized_count) ~ condition_coded,
+            # Gene data
+            data = df
+          ),
+        error = 
+          # Return NULL in case of error
+          function(e) NULL
+      )
+    })
+
+# Now let's summarize the result by collecting coefficients into dataframe
+df_coefficients <- data.frame(
+  gene = names(model),
+  # go over genes using sapply
+  coefficient = sapply(model, function(x) {
+    # obtain coefficient for this gene, converting to log2 instead of log
+    if (is.null(x)) NA_real_ else coef(x)[["condition_coded"]] / log(2)
+  })
+)
+
+```
+
+Technical note: `MASS::glm.nb()` uses a "link" function to couple the output
+of the linear model to the prediction, and per default it takes 
+the log function, such that what we're fitting will be
+$log(y) = \beta_0 + \beta_1 + x_{\text{condition}}$ (f(z) = log(z) being the 
+link function here).
+In addition, `MASS::glm.nb()` (or `lm()` in general) will dummy-code 
+the condition column, such that GC will be coded as 0, and
+FLT will be coded as 1 (alphabetical order).
+Both these default behaviors also apply in DESeq2.
+
+We can now inspect the coefficients that we gathered, as they directly 
+represent fold-change. Let's plot two genes with a big differential expression.
+
+```{r}
+
+# Obtain a top-2
+df_coefficients_sorted <- df_coefficients %>% 
+  # first order the df
+  arrange(desc(coefficient))
+  
+head(df_coefficients_sorted, n=10)
+  
+# Now plot the expression of those genes
+p <- count_data_real_long_normalized |>
+  filter(gene %in% df_coefficients_sorted$gene[1:2]) |>
+  mutate(condition = factor(condition, levels=c("GC", "FLT"))) |>
+  ggplot(aes(x=condition, y=normalized_count+.1, color=condition)) +
+  # geom_point() +
+  geom_jitter(width = 0.2, height = 0) +
+  facet_grid(cols = vars(gene)) +
+  scale_y_log10() +
+  ylim(c(.1, 100)) +
+  theme_classic() +
+  custom_adjust_fonts(15) +
+  ylab("Count") +
+  theme(legend.position="none") +
+  scale_color_manual(values = c("GC" = "brown", "FLT" = "darkblue")) 
+
+# Save
+ggsave("plots/tut-3/manualfitting_top2_genes.pdf", plot=p, width=10, height=5, units='cm', device=cairo_pdf)
+
+```
+
+
+
+```{r}
+
+# Let's also retrieve the L2FC from DESeq2
+df_results_combined <- 
+  as.data.frame(
+    # obtain DESeq2 results, FLT relative to GC
+    results(dds_full, contrast=c("condition", "space_flight", "ground_control"))
+    ) |>
+  rownames_to_column(var="gene") |>
+  left_join(df_coefficients, by='gene')
+  
+# And compare
+p1 <- df_results_combined  |>
+  ggplot(aes(x=log2FoldChange, y=coefficient)) +
+    geom_point() +
+    theme_classic() +
+    xlab("DESeq2 log2 fold change") +
+    ylab("Coefficient from manual fit") +
+    geom_abline(slope=1, intercept=0, color='red', label="x=y") +
+    ggtitle("All data") +
+    custom_adjust_fonts()
+    
+# Set bounds to main part of data    
+coeff_low  = quantile(df_results_combined$coefficient, .05, na.rm=TRUE)
+coeff_high = quantile(df_results_combined$coefficient, .95, na.rm=TRUE)
+p2 <- p1 + 
+  xlim(c(coeff_low, coeff_high)) + 
+  ylim(c(coeff_low, coeff_high)) +
+  coord_fixed() + 
+  ggtitle("90% center quantile")
+    
+p <- p2 + p1    
+    
+# and save
+ggsave("plots/tut-3/manualfitting_log2fc_comparison.pdf", plot=p, 
+  width=20, height=10, units='cm', device=cairo_pdf)
+  
+p + adjust_fonts(12)  
+```
+
+WILL BE SOPHISTICATED LATER
+
+
+
+
 # Calculate dispersions
 
 ## What's dispersion and why is it important
 
-In the end, our aim is to know how changes in gene expression depend on the different conditions of our experiment.
+As mentioned, in the end, our aim is to know how changes in gene expression depend on the different conditions of our experiment.
 
 Due to technical and biological factors, gene expression counts will vary, even within the same condition.
 Dispersion (variability) refers to the extent by which observations of a quantity, in this case counts, vary.
@@ -463,7 +613,8 @@ gist of it.
 
 ### The dispersion is not similar for all genes
 
-Let's take a better look at the dispersion, and calculate some metrics that
+Since our goal is to estimate dispersion that is not due to experimental conditions,
+let's take a better look at the dispersion, and calculate some metrics that
 quantify that dispersion.
 
 ```{r}
