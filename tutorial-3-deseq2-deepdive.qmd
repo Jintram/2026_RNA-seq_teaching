@@ -404,14 +404,7 @@ As you can see, normalized counts (black) are (somewhat) more equal in height,
 but still different from each other.
 
 
-
 # Calculate dispersions
-
-Knowledge about the dispersion of genes is used in three ways:
-
-- Improve the estimation of the fold changes
-- To estimate the likelyhood differential expression is stastistically significant
-- To improve the accuracy of the PCA
 
 ## What's dispersion and why is it important
 
@@ -426,7 +419,7 @@ in the example with gene B, we can be less sure of that.
 ```{r}
 #| code-fold: true
 
-set.seed(30)
+set.seed(123)
 
 df_example_simpleDE <-
   data.frame(
@@ -462,26 +455,57 @@ p <- df_example_simpleDE |>
 ggsave("plots/tut-3/dispersion_example.pdf", plot=p, width=13, height=12, units='cm', device=cairo_pdf)
 
 p + custom_adjust_fonts(12)
+
+# Print fold-changes
+df_FC <- df_example_simpleDE %>%
+  group_by(gene, condition) %>%
+  summarise(mean_count = mean(counts), .groups = "drop") %>%
+  pivot_wider(names_from = condition, values_from = mean_count) %>%
+  mutate(FC = Treatment/Control) 
+  
+print(paste0("Gene A has FC=", round(df_FC$FC[1],2),", ","Gene B has FC=", round(df_FC$FC[2],2)))
+
 ```
+
+In these examples you can see by eye that there is a high variability
+in gene B's expression, which is why we trust the fold change estimate much
+less.
 
 Trying to answer which genes are truely differentially expresssed, 
 is our reason to use a tool like DESeq2, 
-which will estimate statistics to assess whether changes are 
-"random" or due to biology.
+which will produce statistics to say something about this.
 
-To achieve this, simply put, DESeq2 will estimate the dispersion for each gene
-that is attributed to "randomness", such that it can estimate whether 
-observed changes lie outside the expected random variability, and are thus likely to be 
-related to the different experimental conditions.
+As you can see from the example above, dispersion (variability) plays a big role 
+in determining whether we can trust the fold change estimate. 
+Indeed, dispersion estimates play a central role in DESeq2's ability to
+calculate stastistics that inform us about the extent and significance of 
+differential gene expression.
 
-Or, in more technical terms, it will calculate p-values based on dispersion estimates, 
-which reflect the likelyhood that H0 (no difference between conditions),
-is true. 
-If that probability is low (typically $p<0.05$ or $<0.01$), 
-we can reject H0, and say that there is likely a difference between conditions.
+## Estimating dispersion plays a large role in DESeq2
 
-The method by which this is done is quite a bit more complicated, but that's the 
-gist of it.
+<!--Estimating dispersion (variabillity) plays a big role in DESeq2’s approach.-->
+
+XXXXXX
+I WAS EDITING HERE!!!
+XXXXXX
+
+In broad strokes, the observed dispersion in gene expression is used to:
+
+- **Inform statistical testing.** 
+At the end of the DESeq2 procedure, a p-value is calculated to determine statistical
+significance of the differential expression. 
+In the calculation of this p-value, an estimate of the dispersion is used.
+- **Improve L2FC estimates.** 
+DESeq2 will estimate the fold-change, which is based on the data, 
+but variability estimates are used to refine the estimate.
+- **Improve PCA accuracy.** 
+Optionally, you can create a modified gene count matrix in which 
+dispersion information is to normalize the dispersion. 
+When you use a PCA for data visualization, basing it on the 
+variance normalized ("variance-stabilized") count matrix, 
+will result in a more accurate representation of the data by the PCA.
+
+
 
 ### The dispersion is not similar for all genes
 
@@ -966,6 +990,30 @@ the prior is based on the data itself).
 
 
 
+
+
+# Calculating p-values (statistical testing)
+
+To achieve this, simply put, DESeq2 will estimate the dispersion (variability) for each gene
+that is attributed to "randomness", such that it can estimate whether 
+observed changes lie outside the expected random variability, and are thus likely to be 
+related to the different experimental conditions.
+
+Or, in more technical terms, it will calculate p-values based on dispersion estimates, 
+which reflect the likelyhood that H0 (no difference between conditions),
+is true. 
+If that probability is low (typically $p<0.05$ or $<0.01$), 
+we can reject H0, and say that there is likely a difference between conditions.
+
+The method by which this is done is quite a bit more complicated, but that's the 
+gist of it.
+
+
+
+
+
+
+# Text to still re-structure
 
 
 
