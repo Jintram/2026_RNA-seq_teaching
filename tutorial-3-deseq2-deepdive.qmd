@@ -404,7 +404,231 @@ As you can see, normalized counts (black) are (somewhat) more equal in height,
 but still different from each other.
 
 
-XXXXX
+
+# Calculate dispersions
+
+Knowledge about the dispersion of genes is used in three ways:
+
+- Improve the estimation of the fold changes
+- To estimate the likelyhood differential expression is stastistically significant
+- To improve the accuracy of the PCA
+
+## What's dispersion and why is it important
+
+As mentioned, in the end, our aim is to know how changes in gene expression depend on the different conditions of our experiment.
+
+Due to technical and biological factors, gene expression counts will vary, even within the same condition.
+Dispersion (variability) refers to the extent by which observations of a quantity, in this case counts, vary.
+
+In the example with gene A below, we can say with high likelyhood that the gene is differentially expressed, whilst 
+in the example with gene B, we can be less sure of that.
+
+```{r}
+#| code-fold: true
+
+set.seed(30)
+
+df_example_simpleDE <-
+  data.frame(
+    counts = c(
+      20+rnorm(n = 3, mean = 10, sd = .25),
+      20+rnorm(n = 3, mean = 15, sd = .25),
+      20+rnorm(n = 3, mean = 10, sd = 15),
+      20+rnorm(n = 3, mean = 15, sd = 15)
+    ),
+    gene = c(
+      rep('gene A\n(low dispersion)', 6),
+      rep('gene B\n(high dispersion)', 6)
+    ),
+    condition = c(
+      rep('Control',3), 
+      rep('Treatment',3), 
+      rep('Control',3), 
+      rep('Treatment',3)
+    ))
+    
+p <- df_example_simpleDE |>
+  ggplot(aes(x=condition, y=counts))+
+  geom_point()+
+  facet_grid(cols = vars(gene))+
+  theme_classic() +
+  ylab("Counts")+
+  xlab("Condition")+
+  ggtitle("n=3") +
+  theme(plot.title = element_text(hjust = 1)) +
+  custom_adjust_fonts()
+  
+# save 
+ggsave("plots/tut-3/dispersion_example.pdf", plot=p, width=13, height=12, units='cm', device=cairo_pdf)
+
+p + custom_adjust_fonts(12)
+```
+
+Trying to answer which genes are truely differentially expresssed, 
+is our reason to use a tool like DESeq2, 
+which will estimate statistics to assess whether changes are 
+"random" or due to biology.
+
+To achieve this, simply put, DESeq2 will estimate the dispersion for each gene
+that is attributed to "randomness", such that it can estimate whether 
+observed changes lie outside the expected random variability, and are thus likely to be 
+related to the different experimental conditions.
+
+Or, in more technical terms, it will calculate p-values based on dispersion estimates, 
+which reflect the likelyhood that H0 (no difference between conditions),
+is true. 
+If that probability is low (typically $p<0.05$ or $<0.01$), 
+we can reject H0, and say that there is likely a difference between conditions.
+
+The method by which this is done is quite a bit more complicated, but that's the 
+gist of it.
+
+### The dispersion is not similar for all genes
+
+Since our goal is to estimate dispersion that is not due to experimental conditions,
+let's take a better look at the dispersion, and calculate some metrics that
+quantify that dispersion.
+
+```{r}
+
+# First for the synthetic data
+# now calculate mean, variance and sd
+df_dispersion_synth <- count_data_synth_long %>%      
+    group_by(gene) %>%
+    summarise(mean = mean(counts),
+              sd   = sd(counts),
+              variance = var(counts)) %>%
+    # also calculate "alpha", which we'll use later
+    mutate(alpha = (variance-mean)/mean^2)
+    
+# Then for the real data
+# now calculate mean, variance and sd    
+df_dispersion_real <- count_data_real_long %>%      
+    group_by(gene) %>%
+    summarise(mean = mean(counts),
+              sd   = sd(counts),
+              variance = var(counts)) %>%
+    # also calculate "alpha", which we'll use later
+    mutate(alpha = (variance-mean)/mean^2)
+```
+
+When we look at the values that we now have, we'll see that there is a wide
+range of dispersion values per gene:
+
+```{r}
+# Histogram of dispersion values for all genes
+
+p <- df_dispersion_real |>
+    ggplot(aes(x=sd)) +
+    geom_histogram(bins=100) +
+    theme_classic() +
+    scale_x_log10(labels = scales::label_comma()) +
+    xlab("Standard deviation for a gene") +
+    ylab("Times observed") +
+    ggtitle("Spaceflight data") +
+    custom_theme_bar()
+    
+ggsave("plots/tut-3/dispersion_histogram.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
+
+p + custom_adjust_fonts(12)
+
+```
+
+If we plot the standard deviation versus the mean, we'll see that there's a clear
+dependency of the sd on the mean.
+
+```{r}
+# sd versus mean relationship
+
+p <- df_dispersion_real |>
+    ggplot(aes(x=mean, y=sd)) +
+      # trendline
+    geom_smooth(method='lm', formula = y ~ x, color='red') +
+    # points
+    geom_point() +
+    # R = ..
+    annotate("text", x = 0.1, y = max(df_dispersion_real$sd)*.95, 
+             label = paste0("R = ", round(cor(df_dispersion_real$mean, df_dispersion_real$sd), 2)),
+             hjust = 0, vjust = 1) +
+    theme_classic() +
+    xlab("Mean expression") +
+    ylab("Standard deviation") +
+    ggtitle("Spaceflight data") 
+    
+ggsave("plots/tut-3/dispersion_sd_vs_mean.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
+
+p + custom_adjust_fonts(12)
+
+```
+
+What DESeq2 will try to do is quantify this trend, 
+and use that to estimate each gene's dispersion due to "randomness", 
+such that it can determine likelyhood of H0.
+
+Specifically, DESeq2 assumes gene count values show statistics that are 
+consistent with a negative binominal distribution.
+For such a distribution, the variance and mean are related by the following
+relationship:
+
+$$
+\text{variance} = \mu + \alpha \cdot \mu^2
+$$ 
+
+With $\alpha$ a free parameter that determines how the relationship looks precisely.
+Let's see how consistent the data is with this assumption:
+
+```{r}
+# The function describing variance = mu + alpha * mu^2
+fn_NBvariance <- function(mu, alpha) {
+    return(mu + alpha * mu^2)
+}
+
+# Let's first fit the dispersion coefficient
+# Fit alpha in: variance = mu + alpha * mu^2
+# Use nls on log-transformed values for a better fit across the wide range
+df_fit <- df_dispersion_real %>% filter(mean > 0, variance > 0)
+fit <- nls(log(variance) ~ log(mean + alpha * mean^2),
+           data = df_fit,
+           start = list(alpha = 0.01),
+           control = nls.control(maxiter = 200))
+MY_ALPHA_real <- coef(fit)[["alpha"]]
+cat("Fitted alpha:", MY_ALPHA_real, "\n")
+
+# Now plot
+p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
+    geom_point(color='grey') + 
+    geom_density2d(color='black', bins=5) + 
+    geom_abline(slope=1, intercept=0, color='red', size=1) +
+    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA_real), color='blue', size=1) +
+    scale_x_log10() + scale_y_log10() + 
+    theme_classic() +
+    annotate("text", x = 0.1, y = max(df_dispersion_real$variance)*.95, 
+             label = paste0("variance = mean + alpha * mean^2\nalpha =",round(MY_ALPHA_real,2)),
+             hjust = 0, vjust = 1) +
+    xlab('Mean gene expression (all conditions)') +
+    ylab('Variance in gene expression (all conditions)') +
+    ggtitle('Spaceflight data')
+
+# export to directory plots/tut-3/
+ggsave("plots/tut-3/dispersion_variance_mean_real_data.pdf", plot=p, width=10, height=10, units='cm')
+
+p + custom_adjust_fonts(12)
+```
+
+
+DESeq2 tries to quantify this trend, combine it with information on the observed 
+dispersion of a gene, and then produces an updated dispersion estimate for 
+a each gene separately.
+
+As mentioned, these dispersion estimates are then used to 
+calculate p-values for the likelyhood of H0, and thus to determine which genes are likely differentially expressed.
+
+
+
+# Estimate log fold changes
+
+
+XXXXXXXXXXXXXXXXXXXXXXXXX
 
 THE ESTIMATION OF DISPERSIONS DOES COME FIRST, AND CAN BE INCORPORATED 
 EASILY IN THE MANUAL GLM!!
@@ -422,8 +646,7 @@ EASILY IN THE MANUAL GLM!!
 # )
 ```
 
-
-# Estimate log fold changes
+XXXXXXXXXXXXXXXXXXXXXXXXX
 
 In the end, our aim is to know how changes in gene expression depend on the different conditions of our experiment.
 
@@ -748,224 +971,6 @@ the prior is based on the data itself).
 
 
 
-
-# Calculate dispersions
-
-Knowledge about the dispersion of genes is used in three ways:
-
-- Improve the estimation of the fold changes
-- To estimate the likelyhood differential expression is stastistically significant
-- To improve the accuracy of the PCA
-
-## What's dispersion and why is it important
-
-As mentioned, in the end, our aim is to know how changes in gene expression depend on the different conditions of our experiment.
-
-Due to technical and biological factors, gene expression counts will vary, even within the same condition.
-Dispersion (variability) refers to the extent by which observations of a quantity, in this case counts, vary.
-
-In the example with gene A below, we can say with high likelyhood that the gene is differentially expressed, whilst 
-in the example with gene B, we can be less sure of that.
-
-```{r}
-#| code-fold: true
-
-set.seed(30)
-
-df_example_simpleDE <-
-  data.frame(
-    counts = c(
-      20+rnorm(n = 3, mean = 10, sd = .25),
-      20+rnorm(n = 3, mean = 15, sd = .25),
-      20+rnorm(n = 3, mean = 10, sd = 15),
-      20+rnorm(n = 3, mean = 15, sd = 15)
-    ),
-    gene = c(
-      rep('gene A\n(low dispersion)', 6),
-      rep('gene B\n(high dispersion)', 6)
-    ),
-    condition = c(
-      rep('Control',3), 
-      rep('Treatment',3), 
-      rep('Control',3), 
-      rep('Treatment',3)
-    ))
-    
-p <- df_example_simpleDE |>
-  ggplot(aes(x=condition, y=counts))+
-  geom_point()+
-  facet_grid(cols = vars(gene))+
-  theme_classic() +
-  ylab("Counts")+
-  xlab("Condition")+
-  ggtitle("n=3") +
-  theme(plot.title = element_text(hjust = 1)) +
-  custom_adjust_fonts()
-  
-# save 
-ggsave("plots/tut-3/dispersion_example.pdf", plot=p, width=13, height=12, units='cm', device=cairo_pdf)
-
-p + custom_adjust_fonts(12)
-```
-
-Trying to answer which genes are truely differentially expresssed, 
-is our reason to use a tool like DESeq2, 
-which will estimate statistics to assess whether changes are 
-"random" or due to biology.
-
-To achieve this, simply put, DESeq2 will estimate the dispersion for each gene
-that is attributed to "randomness", such that it can estimate whether 
-observed changes lie outside the expected random variability, and are thus likely to be 
-related to the different experimental conditions.
-
-Or, in more technical terms, it will calculate p-values based on dispersion estimates, 
-which reflect the likelyhood that H0 (no difference between conditions),
-is true. 
-If that probability is low (typically $p<0.05$ or $<0.01$), 
-we can reject H0, and say that there is likely a difference between conditions.
-
-The method by which this is done is quite a bit more complicated, but that's the 
-gist of it.
-
-### The dispersion is not similar for all genes
-
-Since our goal is to estimate dispersion that is not due to experimental conditions,
-let's take a better look at the dispersion, and calculate some metrics that
-quantify that dispersion.
-
-```{r}
-
-# First for the synthetic data
-# now calculate mean, variance and sd
-df_dispersion_synth <- count_data_synth_long %>%      
-    group_by(gene) %>%
-    summarise(mean = mean(counts),
-              sd   = sd(counts),
-              variance = var(counts)) %>%
-    # also calculate "alpha", which we'll use later
-    mutate(alpha = (variance-mean)/mean^2)
-    
-# Then for the real data
-# now calculate mean, variance and sd    
-df_dispersion_real <- count_data_real_long %>%      
-    group_by(gene) %>%
-    summarise(mean = mean(counts),
-              sd   = sd(counts),
-              variance = var(counts)) %>%
-    # also calculate "alpha", which we'll use later
-    mutate(alpha = (variance-mean)/mean^2)
-```
-
-When we look at the values that we now have, we'll see that there is a wide
-range of dispersion values per gene:
-
-```{r}
-# Histogram of dispersion values for all genes
-
-p <- df_dispersion_real |>
-    ggplot(aes(x=sd)) +
-    geom_histogram(bins=100) +
-    theme_classic() +
-    scale_x_log10(labels = scales::label_comma()) +
-    xlab("Standard deviation for a gene") +
-    ylab("Times observed") +
-    ggtitle("Spaceflight data") +
-    custom_theme_bar()
-    
-ggsave("plots/tut-3/dispersion_histogram.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
-
-p + custom_adjust_fonts(12)
-
-```
-
-If we plot the standard deviation versus the mean, we'll see that there's a clear
-dependency of the sd on the mean.
-
-```{r}
-# sd versus mean relationship
-
-p <- df_dispersion_real |>
-    ggplot(aes(x=mean, y=sd)) +
-      # trendline
-    geom_smooth(method='lm', formula = y ~ x, color='red') +
-    # points
-    geom_point() +
-    # R = ..
-    annotate("text", x = 0.1, y = max(df_dispersion_real$sd)*.95, 
-             label = paste0("R = ", round(cor(df_dispersion_real$mean, df_dispersion_real$sd), 2)),
-             hjust = 0, vjust = 1) +
-    theme_classic() +
-    xlab("Mean expression") +
-    ylab("Standard deviation") +
-    ggtitle("Spaceflight data") 
-    
-ggsave("plots/tut-3/dispersion_sd_vs_mean.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
-
-p + custom_adjust_fonts(12)
-
-```
-
-What DESeq2 will try to do is quantify this trend, 
-and use that to estimate each gene's dispersion due to "randomness", 
-such that it can determine likelyhood of H0.
-
-Specifically, DESeq2 assumes gene count values show statistics that are 
-consistent with a negative binominal distribution.
-For such a distribution, the variance and mean are related by the following
-relationship:
-
-$$
-\text{variance} = \mu + \alpha \cdot \mu^2
-$$ 
-
-With $\alpha$ a free parameter that determines how the relationship looks precisely.
-Let's see how consistent the data is with this assumption:
-
-```{r}
-# The function describing variance = mu + alpha * mu^2
-fn_NBvariance <- function(mu, alpha) {
-    return(mu + alpha * mu^2)
-}
-
-# Let's first fit the dispersion coefficient
-# Fit alpha in: variance = mu + alpha * mu^2
-# Use nls on log-transformed values for a better fit across the wide range
-df_fit <- df_dispersion_real %>% filter(mean > 0, variance > 0)
-fit <- nls(log(variance) ~ log(mean + alpha * mean^2),
-           data = df_fit,
-           start = list(alpha = 0.01),
-           control = nls.control(maxiter = 200))
-MY_ALPHA_real <- coef(fit)[["alpha"]]
-cat("Fitted alpha:", MY_ALPHA_real, "\n")
-
-# Now plot
-p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
-    geom_point(color='grey') + 
-    geom_density2d(color='black', bins=5) + 
-    geom_abline(slope=1, intercept=0, color='red', size=1) +
-    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA_real), color='blue', size=1) +
-    scale_x_log10() + scale_y_log10() + 
-    theme_classic() +
-    annotate("text", x = 0.1, y = max(df_dispersion_real$variance)*.95, 
-             label = paste0("variance = mean + alpha * mean^2\nalpha =",round(MY_ALPHA_real,2)),
-             hjust = 0, vjust = 1) +
-    xlab('Mean gene expression (all conditions)') +
-    ylab('Variance in gene expression (all conditions)') +
-    ggtitle('Spaceflight data')
-
-# export to directory plots/tut-3/
-ggsave("plots/tut-3/dispersion_variance_mean_real_data.pdf", plot=p, width=10, height=10, units='cm')
-
-p + custom_adjust_fonts(12)
-```
-
-
-DESeq2 tries to quantify this trend, combine it with information on the observed 
-dispersion of a gene, and then produces an updated dispersion estimate for 
-a each gene separately.
-
-As mentioned, these dispersion estimates are then used to 
-calculate p-values for the likelyhood of H0, and thus to determine which genes are likely differentially expressed.
 
 # Fitting gene expression to conditions
 
