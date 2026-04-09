@@ -101,6 +101,12 @@ count_data_real <- read.csv("/Users/m.wehrens/Data_UVA/example-datasets/2026_RNA
                             row.names=1)
 count_data_real_meta <- read.csv("/Users/m.wehrens/Data_UVA/example-datasets/2026_RNAseq-Misha/samples_to_condition.csv",
                           row.names=1)
+
+TEST_RUN = TRUE
+if (TEST_RUN) {
+  # subset `count_data_real` to first 3000 rows
+  count_data_real <- count_data_real[1:3000, ]
+}
                           
 # Now show 
 ```
@@ -396,13 +402,44 @@ In the end, our aim is to know how changes in gene expression depend on the diff
 To understand changes in gene expression, we could simply calculate the 
 ratio of average expression in one condition, compared to the other.
 
+```{r}
+
+# A simple direct calculation of log2 fold changes, using averages
+df_l2fc_manual <- count_data_real_long_normalized |>
+    # first gather averages
+    group_by(condition, gene) |>
+    summarise(gene_average = mean(round(normalized_count))) |>    
+    # now determine FC
+    filter(gene_average>0) |>
+    group_by(gene) |>
+    pivot_wider(names_from = condition, values_from = gene_average) |>
+    mutate(FC = FLT/GC, 
+            L2FC = log2(FC)) |>
+    arrange(desc(L2FC))
+
+# Plot the top 3
+p <- count_data_real_long_normalized |>
+  filter(gene %in% df_l2fc_manual$gene[1:3]) |>
+  ggplot(aes(x=condition, y=counts, color=condition)) +
+    geom_point() +
+    facet_wrap(~gene, scales = "free_y") +
+    theme_classic() +
+    xlab('Condition') + ylab('Average normalized count') +
+    scale_color_manual(values = c("GC" = "brown", "FLT" = "darkblue")) + 
+    custom_theme_bar() + 
+    theme(legend.position = "none")    
+    
+# Save
+ggsave("plots/tut-3/manualfitting_top3_genes.pdf", plot=p, width=20, height=8, units='cm', device=cairo_pdf)    
+    
+p + custom_adjust_fonts(12)    
+    
+```
+
 However, to be more precise and versatile (allowing for multiple conditions, e.g.), 
-DESeq2 fits constants that describe the statistics. Mean expression level,
-variability (dispersion), and the dependence on the condition are all fitted.
-
-
-To get an initial impression of this, DESeq2 fits constants that describe
-how conditions affect gene expression.
+DESeq2 fits the log2 fold changes using a "GLM" (generalized linear model), 
+which is an extension of a linear model that allows
+for non-normal distributions (DESeq2 assumes a negative binominal model for gene counts).
 
 For example, if we have the condition $x$ corresponding to either ground
 control ($x=0$) or space flight ($x=1$), we can fit gene expression $q_i$ for 
@@ -415,7 +452,7 @@ $$
 The idea here is to fit $\beta$ such that it reflects the effect the effect
 the condition $x$ has on the final expression of gene $i$.
 
-We can perform an important part of this fitting procedure as follows:
+We can perform the GLM fitting procedure as follows:
 
 ```{r}
 
@@ -446,18 +483,29 @@ model <- count_data_real_long_normalized %>%
     })
 
 # Now let's summarize the result by collecting coefficients into dataframe
+# Note: this code could be more generalized, but now it's more explicit.
 df_coefficients <- data.frame(
   gene = names(model),
   # go over genes using sapply
   coefficient = sapply(model, function(x) {
     # obtain coefficient for this gene, converting to log2 instead of log
-    if (is.null(x)) NA_real_ else coef(x)[["condition_coded"]] / log(2)
+    if (is.null(x)) NA_real_ else coef(x)[["condition_coded"]] 
+  }),
+  baselvl    = sapply(model, function(x) {
+    # obtain offset (intercept) for this gene 
+    if (is.null(x)) NA_real_ else coef(x)[["(Intercept)"]] 
   })
-)
+) |>
+  mutate(l2.coefficient  = coefficient/log(2)) |>
+  arrange(desc(l2.coefficient))
 
 ```
 
-Technical note: `MASS::glm.nb()` uses a "link" function to couple the output
+::: {.callout-note}
+
+## Technical note
+
+`MASS::glm.nb()` uses a "link" function to couple the output
 of the linear model to the prediction, and per default it takes 
 the log function, such that what we're fitting will be
 $log(y) = \beta_0 + \beta_1 + x_{\text{condition}}$ (f(z) = log(z) being the 
@@ -467,38 +515,111 @@ the condition column, such that GC will be coded as 0, and
 FLT will be coded as 1 (alphabetical order).
 Both these default behaviors also apply in DESeq2.
 
+:::
+
 We can now inspect the coefficients that we gathered, as they directly 
-represent fold-change. Let's plot two genes with a big differential expression.
+represent fold-change. Let's plot two genes with a big differential expression,
+and the fits by the GLM.
 
 ```{r}
 
-# Obtain a top-2
-df_coefficients_sorted <- df_coefficients %>% 
-  # first order the df
-  arrange(desc(coefficient))
+# Top 10 genes  
+head(df_coefficients, n=10)
   
-head(df_coefficients_sorted, n=10)
+# Now calculate the predictions
+df_predictions <- df_coefficients %>%
+  # Add coded condition
+  mutate(condition.val1 = 0, condition.val2 = 1) %>%
+  pivot_longer(cols=c(condition.val1, condition.val2), names_to = "condition", values_to = "condition_coded") |>
+  # Add condition
+  mutate(condition = ifelse(condition_coded == "0", "GC", "FLT")) %>%
+  # Add predictions
+  mutate(prediction = exp(baselvl + coefficient * condition_coded))
   
-# Now plot the expression of those genes
-p <- count_data_real_long_normalized |>
-  filter(gene %in% df_coefficients_sorted$gene[1:2]) |>
+# Now plot the expression of top 2 genes
+df_plot_counts <- count_data_real_long_normalized |>
+  filter(gene %in% df_coefficients$gene[1:2]) |>
+  mutate(
+    # set lvl order
+    condition = factor(condition, levels=c("GC", "FLT")),
+    # add condition_coded
+    condition_coded = ifelse(condition == "GC", 0, 1)
+  )
+
+df_plot_pred <- df_predictions |>
+  filter(gene %in% df_coefficients$gene[1:2]) |>
   mutate(condition = factor(condition, levels=c("GC", "FLT"))) |>
-  ggplot(aes(x=condition, y=normalized_count+.1, color=condition)) +
-  # geom_point() +
-  geom_jitter(width = 0.2, height = 0) +
+    # add label
+  mutate(label = paste0(
+    "y = exp(", round(baselvl, 2), " + ", round(coefficient, 2), "x)"
+  ))
+  
+  
+p <- ggplot() +
+  # Plot predictions
+  geom_line(
+    data = df_plot_pred, 
+    aes(x=condition_coded, y=prediction+.1, group=gene), 
+    stat='identity')+
+  geom_label(
+    data = df_plot_pred,
+    aes(x = 0, y = Inf, label = label),
+    hjust = 0.1, vjust = 1.3  # nudge inward from top-right corner
+  ) +
+  # plot the data
+  geom_jitter(
+    data = df_plot_counts,
+    aes(x=condition_coded, y=normalized_count+.1, color=condition),
+    width = 0.2, height = 0) +
+  # grid
   facet_grid(cols = vars(gene)) +
+  # cosmetics
+  # set xtick labels to display 0 and 1 only
+  scale_x_continuous(breaks = c(0, 1)) +
   scale_y_log10() +
-  ylim(c(.1, 100)) +
   theme_classic() +
   custom_adjust_fonts(15) +
   ylab("Count") +
   theme(legend.position="none") +
   scale_color_manual(values = c("GC" = "brown", "FLT" = "darkblue")) 
 
+p
+
 # Save
 ggsave("plots/tut-3/manualfitting_top2_genes.pdf", plot=p, width=10, height=5, units='cm', device=cairo_pdf)
 
 ```
+
+::: {.callout-note}
+
+## Shrunken L2FC estimates
+
+"A common difficulty in the analysis of \[high-throughput sequencing\] data is 
+the strong variance of LFC estimates for genes with low read count. 
+(..) weakly expressed genes seem to show much stronger differences between the 
+\[conditions\] than strongly expressed genes"
+-- ([Love, Huber & Anders, 2014](http://doi.org/10.1186/s13059-014-0550-8))
+
+To counter the effect of blown-up L2FC values in lowly-expressed genes,
+DESeq2 offers a correction on top of the L2FC estimated by the GLM.
+The function `lfcShrink()` applies 
+a "Bayesian" statistics approach, 
+meaning that they re-calculate the estimated L2FC, taking into account
+the assumption (and corresponding probability distribution) that 
+most genes will have an L2FC of zero, and substantial variability around that
+zero.
+
+More precisely, a prior is used that is centered at zero (assumption: most genes aren't DE).
+Its width is learned from the data, such that genes with weak evidence (low counts → wide likelihood) 
+get pulled more strongly toward zero whilst genes with strong evidence (high counts → narrow likelihood) 
+are barely affected (this is called an empirical Bayes approach, as 
+the prior is based on the data itself).
+
+:::
+
+
+
+
 
 
 
@@ -515,7 +636,7 @@ df_results_combined <-
   
 # And compare
 p1 <- df_results_combined  |>
-  ggplot(aes(x=log2FoldChange, y=coefficient)) +
+  ggplot(aes(x=log2FoldChange, y=l2.coefficient)) +
     geom_point() +
     theme_classic() +
     xlab("DESeq2 log2 fold change") +
@@ -525,13 +646,13 @@ p1 <- df_results_combined  |>
     custom_adjust_fonts()
     
 # Set bounds to main part of data    
-coeff_low  = quantile(df_results_combined$coefficient, .05, na.rm=TRUE)
-coeff_high = quantile(df_results_combined$coefficient, .95, na.rm=TRUE)
+coeff_low  = -5 # quantile(df_results_combined$coefficient, .05, na.rm=TRUE)
+coeff_high = 5  # quantile(df_results_combined$coefficient, .95, na.rm=TRUE)
 p2 <- p1 + 
   xlim(c(coeff_low, coeff_high)) + 
   ylim(c(coeff_low, coeff_high)) +
   coord_fixed() + 
-  ggtitle("90% center quantile")
+  ggtitle(paste0("L2FC range ", round(coeff_low,1), " to ", round(coeff_high,1)))
     
 p <- p2 + p1    
     
@@ -544,19 +665,6 @@ p + custom_adjust_fonts(12)
 
 
 ```{r}
-
-# Comparing to a direct calculation
-df_l2fc_manual <- count_data_real_long_normalized |>
-    # first gather averages
-    group_by(condition, gene) |>
-    summarise(gene_average = mean(round(normalized_count))) |>    
-    # now determine FC
-    filter(gene_average>0) |>
-    group_by(gene) |>
-    pivot_wider(names_from = condition, values_from = gene_average) |>
-    mutate(FC = FLT/GC, 
-            L2FC = log2(FC)) |>
-    arrange(desc(L2FC))
     
 # Add this to the comparison frame as well
 df_results_combined <- df_results_combined |>
@@ -566,7 +674,7 @@ df_results_combined <- df_results_combined |>
 range_min = min(df_results_combined$L2FC, na.rm=TRUE)
 range_max = max(df_results_combined$L2FC, na.rm=TRUE)
 p <- df_results_combined  |>
-  ggplot(aes(x=L2FC, y=coefficient)) +
+  ggplot(aes(x=L2FC, y=l2.coefficient)) +
     geom_point() +
     theme_classic() +
     xlab("Manual log2 fold change (average)") +
@@ -579,7 +687,7 @@ p <- df_results_combined  |>
 
 p
 ```
-WILL BE SOPHISTICATED LATER
+
 
 
 
