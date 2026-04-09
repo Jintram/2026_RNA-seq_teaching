@@ -1,11 +1,17 @@
 ---
 title: "DESeq2 Deep Dive"
-format: html
+format: 
+  html:
+    toc: true
+    toc-depth: 1      # how many heading levels to include
+    toc-title: "Contents"
+    toc-location: body # left, right, or body
 editor: visual
 knitr:
   opts_chunk:
     warning: false
 ---
+
 
 # Setting up
 
@@ -407,12 +413,13 @@ EASILY IN THE MANUAL GLM!!
 ###### CODE BY CLAUDE ######
 
 # theta = 1/alpha (DESeq2's dispersion alpha, not to be confused with MASS's theta)
-my_alpha <- 0.5  # your dispersion estimate
-glm(
-  normalized_count ~ condition_coded,
-  data = df,
-  family = MASS::negative.binomial(theta = 1 / my_alpha)
-)
+
+# my_alpha <- 0.5  # your dispersion estimate
+# glm(
+#   normalized_count ~ condition_coded,
+#   data = df,
+#   family = MASS::negative.binomial(theta = 1 / my_alpha)
+# )
 ```
 
 
