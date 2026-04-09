@@ -751,6 +751,12 @@ the prior is based on the data itself).
 
 # Calculate dispersions
 
+Knowledge about the dispersion of genes is used in three ways:
+
+- Improve the estimation of the fold changes
+- To estimate the likelyhood differential expression is stastistically significant
+- To improve the accuracy of the PCA
+
 ## What's dispersion and why is it important
 
 As mentioned, in the end, our aim is to know how changes in gene expression depend on the different conditions of our experiment.
