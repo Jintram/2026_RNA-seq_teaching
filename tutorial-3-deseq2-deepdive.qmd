@@ -17,10 +17,7 @@ knitr:
 
 ## Acknowledgements
 
-Aside from the [DESeq2 paper itself](http://doi.org/10.1186/s13059-014-0550-8), additional [explanation](https://hbctraining.github.io/Intro-to-DGE/schedule/links-to-lessons.html) from [Mistry et al.](https://doi.org/10.5281/zenodo.4783480) from the Harvard Chan Bioinformatics Core was very helpfull in compiling this material.
-
-In addition, I used Claude Opus 4.6's understanding of DESeq2, which I fact-check with above
-resources and in the original [DESeq2 source code](https://github.com/thelovelab/DESeq2) (15f2ec9).
+Aside from the [DESeq2 paper itself](http://doi.org/10.1186/s13059-014-0550-8) (and the earlier [DESeq paper](https://www.nature.com/articles/npre.2010.4282.1)), additional [explanation](https://hbctraining.github.io/Intro-to-DGE/schedule/links-to-lessons.html) from [Mistry et al.](https://doi.org/10.5281/zenodo.4783480) from the Harvard Chan Bioinformatics Core was very helpfull in compiling this material. In addition, I used Claude Opus 4.6's understanding of DESeq2, which I fact-checked with aforementioned resources and in the original [DESeq2 source code](https://github.com/thelovelab/DESeq2) (15f2ec9).
 
 ```{=html}
 <!--
@@ -483,13 +480,10 @@ differential gene expression.
 
 ## Estimating dispersion plays a large role in DESeq2
 
-<!--Estimating dispersion (variabillity) plays a big role in DESeq2’s approach.-->
-
-XXXXXX
-I WAS EDITING HERE!!!
-XXXXXX
-
-In broad strokes, the observed dispersion in gene expression is used to:
+A load of code in DESeq2 is dedicated to estimate the dispersion (variability)
+in each gene's expression that is not due to differences in experimental
+conditions.
+In broad strokes, this estimated dispersion for each gene is then used to:
 
 - **Inform statistical testing.** 
 At the end of the DESeq2 procedure, a p-value is calculated to determine statistical
@@ -505,11 +499,9 @@ When you use a PCA for data visualization, basing it on the
 variance normalized ("variance-stabilized") count matrix, 
 will result in a more accurate representation of the data by the PCA.
 
-
-
 ### The dispersion is not similar for all genes
 
-Since our goal is to estimate dispersion that is not due to experimental conditions,
+Since the goal is to estimate dispersion that is not due to experimental conditions,
 let's take a better look at the dispersion, and calculate some metrics that
 quantify that dispersion.
 
@@ -528,7 +520,7 @@ df_dispersion_synth <- count_data_synth_long %>%
 # Then for the real data
 # now calculate mean, variance and sd    
 df_dispersion_real <- count_data_real_long %>%      
-    group_by(gene) %>%
+    group_by(gene, condition) %>%
     summarise(mean = mean(counts),
               sd   = sd(counts),
               variance = var(counts)) %>%
@@ -575,8 +567,9 @@ p <- df_dispersion_real |>
              label = paste0("R = ", round(cor(df_dispersion_real$mean, df_dispersion_real$sd), 2)),
              hjust = 0, vjust = 1) +
     theme_classic() +
-    xlab("Mean expression") +
-    ylab("Standard deviation") +
+    scale_x_log10() + scale_y_log10() +
+    xlab("Mean expression (log scale)") +
+    ylab("Standard deviation (log scale)") +
     ggtitle("Spaceflight data") 
     
 ggsave("plots/tut-3/dispersion_sd_vs_mean.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
@@ -586,8 +579,8 @@ p + custom_adjust_fonts(12)
 ```
 
 What DESeq2 will try to do is quantify this trend, 
-and use that to estimate each gene's dispersion due to "randomness", 
-such that it can determine likelyhood of H0.
+and use that to estimate each gene's dispersion due to "randomness"
+(which is then later used to calculated p-values, et cetera, as mentioned above).
 
 Specifically, DESeq2 assumes gene count values show statistics that are 
 consistent with a negative binominal distribution.
@@ -602,6 +595,8 @@ With $\alpha$ a free parameter that determines how the relationship looks precis
 Let's see how consistent the data is with this assumption:
 
 ```{r}
+# Fit alpha
+
 # The function describing variance = mu + alpha * mu^2
 fn_NBvariance <- function(mu, alpha) {
     return(mu + alpha * mu^2)
@@ -620,10 +615,11 @@ cat("Fitted alpha:", MY_ALPHA_real, "\n")
 
 # Now plot
 p <- ggplot(df_dispersion_real, aes(x=mean, y=variance)) +
-    geom_point(color='grey') + 
+    geom_point(color='black', alpha=.2) + 
     geom_density2d(color='black', bins=5) + 
-    geom_abline(slope=1, intercept=0, color='red', size=1) +
-    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA_real), color='blue', size=1) +
+    # geom_abline(slope=1, intercept=0, color='red', size=1) +    
+    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA_real), color='orange', size=1) +
+    stat_function(fun=fn_NBvariance, args=list(alpha=MY_ALPHA_real), color='black', size=.25) +    
     scale_x_log10() + scale_y_log10() + 
     theme_classic() +
     annotate("text", x = 0.1, y = max(df_dispersion_real$variance)*.95, 
@@ -640,6 +636,138 @@ p + custom_adjust_fonts(12)
 ```
 
 
+This seems to work rather well for our data. Using this information, 
+we can now estimate the variability of any gene, given its mean:
+
+$$
+\text{estimated variance}_\text{gene} = \mu_\text{gene} + \alpha_\text{global fit} \cdot \mu_\text{gene}^2
+$$
+
+This is great! If we now have a gene whos average expression is different between
+two conditions, we can use this information to estimate how likely it is that
+that difference was due to chance.
+
+Let's illustrate this with a randomly selected gene (that only has few counts).
+
+```{r}
+
+set.seed(1234)
+
+example_gene <- sample(
+  (count_data_real_long %>% filter(counts > 10 & counts < 15))$gene,
+  1
+)
+
+mean_GC <- 
+  mean(
+    (
+      count_data_real_long %>% 
+        filter(gene == example_gene & condition == 'GC')
+    )$counts
+  )
+
+p <- count_data_real_long %>% 
+  filter(gene == example_gene) %>%
+  ggplot() +
+    geom_jitter(aes(x = counts, y = 0, color=condition), height=.006, width=0, size=5) +
+    scale_color_manual(values = c("GC" = "orange", "FLT" = "darkblue"))  +
+    ylim(c(-.02, .1)) +
+    theme_classic() +
+    # add a gaussian with mu = mean_GC, and sd = sqrt(estimated variance for this gene)
+    # geom_function(
+    #   fun = function(x) dnorm(x, mean = mean_GC, sd = sqrt(fn_NBvariance(mean_GC, MY_ALPHA_real))),
+    #   color = "orange",
+    #   size = 1
+    # ) +
+    # 
+    # .. but the model uses a neg binominal
+    # (use geom_point at integer x values, since dnbinom is a discrete PMF)
+    geom_line(
+      data = data.frame(x = 0:60) |> mutate(y = dnbinom(x, mu = mean_GC, size = 1/MY_ALPHA_real)),
+      aes(x = x, y = y),
+      color = "orange",
+      size = 1
+    ) +
+    xlim(c(0,60)) +
+    ylab("Probability for negative binominal distribution") +
+    xlab("Counts") +
+    custom_adjust_fonts(15) + 
+    ggtitle(paste0('Counts for ', example_gene))
+
+# Save 
+ggsave("plots/tut-3/statistics-gene-example.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
+
+# And show
+p + custom_adjust_fonts(12)
+
+```
+
+Here, the x-axis shows the counts of the selected gene, and points indicate
+specific values that were recorded (for points, differences in the y direction  are 
+only for visualization purposes). 
+The line indicates the negative binominal distribution with mean equal to the 
+mean of the gene's expression in the GC condition, and dispersion as estimated by our fit.
+To determine whether there is statistical evidence for differential expression,
+we want to know the probability that the count values of the FLT conditions
+occured only by chance. That is, given the yellow distribution (H0), what is 
+the chance of finding these FLT values.
+
+The probability getting a single value that's higher than a value x, e.g. $x = 21$,
+is the integrated probability of the negative binominal.
+
+```{r}
+#| code-fold: true
+
+# Calculate the probability that x > 21, assuming neg bin distribution
+prob_x21 <- 1 - pnbinom(21, mu = mean_GC, size = 1/MY_ALPHA_real)
+
+# And plot
+p <- count_data_real_long %>% 
+  filter(gene == example_gene) %>%
+  ggplot() +    
+    ylim(c(-.02, .1)) +
+    theme_classic() +
+    geom_area(
+      data = data.frame(x = 21:60) |> mutate(y = dnbinom(x, mu = mean_GC, size = 1/MY_ALPHA_real)),
+      aes(x = x, y = y),
+      color = "orange",
+      fill = "lightgrey",
+      size = 1
+    ) +
+    geom_line(
+      data = data.frame(x = 0:60) |> mutate(y = dnbinom(x, mu = mean_GC, size = 1/MY_ALPHA_real)),
+      aes(x = x, y = y),
+      color = "orange",
+      size = 1
+    ) +
+    geom_point(aes(x = 21, y = 0, color=condition), height=.006, width=0, size=5, color="darkblue") +
+    annotate("text", x = 22, y = max(dnbinom(0:60, mu = mean_GC, size = 1/MY_ALPHA_real))*0.1, 
+             label = paste0("P(x > 21) = ", round(prob_x21, 2)),
+             hjust = 0, vjust = 1) +
+    xlim(c(0,60)) +
+    ylab("Probability for negative binominal distribution") +
+    xlab("Counts") +
+    custom_adjust_fonts(15) + 
+    ggtitle(paste0('Counts for ', example_gene))
+
+# Save 
+ggsave("plots/tut-3/statistics-gene-example-chance.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
+
+# And show
+p + custom_adjust_fonts(12)
+
+```
+
+For AT1G14240 to have >21 counts, that probability is 0.84, so very likely
+under H0.
+
+To calculate the likelyhood that the mean of multiple FLT count observations are higher (or lower)
+than the GC mean (reference condition), 
+
+
+XXXXXXX I WAS EDITING HERE XXXXXXXX
+
+
 DESeq2 tries to quantify this trend, combine it with information on the observed 
 dispersion of a gene, and then produces an updated dispersion estimate for 
 a each gene separately.
@@ -647,6 +775,52 @@ a each gene separately.
 As mentioned, these dispersion estimates are then used to 
 calculate p-values for the likelyhood of H0, and thus to determine which genes are likely differentially expressed.
 
+::: {.callout-note}
+
+## Technical: DESeq2 doesn't using fit the normalized counts
+
+DESeq2 works with negative binomial distributions, which describe the
+statistics of discrete numbers.
+
+After normalization of the counts by the size factors, the counts are not
+integers any more. 
+
+Under the hood, DESeq2 keeps working with the discrete counts.
+
+The model is as follows:
+
+$$
+K_{ij} \sim \text{NB}(\mu_{ij}, \alpha_i)
+$$
+$$
+\log(\mu_{ij}) = \log(s_j) + \mathbf{x}_j \boldsymbol{\beta}_i
+$$
+
+Which can be written as: 
+$$
+K_{ij} \sim \text{NB}( s_j e^{\mathbf{x}_j \boldsymbol{\beta}_i} , \alpha_i)
+$$
+
+Here, $K_{ij}$ are the raw counts for gene $i$ in sample $j$ that are fitted ("$y$" from "$y = \beta_0 + \beta_1 * x$"),
+with $s_j$ the size factor (and $x_j$ the condition, and $\beta_i$ the coefficients that we want to estimate).
+
+$$
+e^{\mathbf{x}_j \boldsymbol{\beta}_i}
+$$ 
+
+represents our quantity of interest,
+the size-corrected mean counts that we can compare between samples.
+(The factor $s_j$ scales that term back to the raw counts.)
+
+Thus, the size factors are included in the fit.
+
+Technically, this looks like:
+
+```r
+MASS::glm.nb(counts ~ condition + offset(log(size_factor)), data = df)
+```
+
+:::
 
 
 # Estimate log fold changes
