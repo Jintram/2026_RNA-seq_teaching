@@ -410,7 +410,7 @@ As mentioned, in the end, our aim is to know how changes in gene expression depe
 Due to technical and biological factors, gene expression counts will vary, even within the same condition.
 Dispersion (variability) refers to the extent by which observations of a quantity, in this case counts, vary.
 
-In the example with gene A below, we can say with high likelyhood that the gene is differentially expressed, whilst 
+In the example with gene A below, we can say with high likelihood that the gene is differentially expressed, whilst 
 in the example with gene B, we can be less sure of that.
 
 ```{r}
@@ -761,8 +761,109 @@ p + custom_adjust_fonts(12)
 For AT1G14240 to have >21 counts, that probability is 0.84, so very likely
 under H0.
 
-To calculate the likelyhood that the mean of multiple FLT count observations are higher (or lower)
+To calculate the likelihood that the mean of multiple FLT count observations are higher (or lower)
 than the GC mean (reference condition), 
+the calculation is a bit more complicated.
+
+This is however a common problem, and 
+we can use a Wald or t-test here.
+
+These are very related, they both have the same test statistic:
+
+$$
+\frac{\mu_{GC} - \text{mean}_{FLT}}{\sqrt{\text{var}}/\sqrt{N}}
+$$
+
+($\mu$ indicating our H0 population mean.)
+
+This test statistic can be assumed to be normally distributed due to the central limit theorem.
+Or, more specifically, in the t-test this test-statistic is assumed to follow the t-distribution,
+which gets broader for small sample sizes, but converges to the normal distribution for large sample sizes.
+In the Wald test, this test statistic is simply assumed to be 
+normally distributed (in other words, the t-test is a refinement of the Wald test).
+
+For small sample sizes, in principle, the Wald test is not so suitable. 
+However, since DESeq2 doesn't base the estimated variability and 
+expression difference (reflected by the fold change) on information only
+from a single gene, it has more reliable variance estimates, and can use the Wald test, 
+and get more statistical power.
+
+Which we can calculate to be:
+
+```{r}
+#| code-fold: true
+
+df_counts_gene_example <- count_data_real_long %>% filter(gene == example_gene)
+
+# Calculate the test statistic
+mean_FLT <- mean((df_counts_gene_example %>% filter(gene == example_gene & condition == 'FLT'))$counts)
+mean_GC  <- mean((df_counts_gene_example %>% filter(gene == example_gene & condition == 'GC'))$counts)
+var_both <- fn_NBvariance(mean_GC, MY_ALPHA_real)
+
+test_statistic <- (mean_GC-mean_FLT) / (sqrt(var_both)/sqrt(dim(df_counts_gene_example)[1]/2))
+print(paste0('The test statistic t is ', round(test_statistic, 2)))
+
+# And we can calculate the probabality as follows
+MAX_VAL <- 5
+p <- ggplot() +
+  geom_function(
+    # gaussian with mean 0 and sd 1, which is the distribution of the t statistic under H0
+    fun = function(x) dnorm(x, mean = 0, sd = 1),
+    color = "orange",
+    size = 1) +
+  stat_function(
+    # fun = function(x) dt(x, df=2),
+    fun = function(x) dnorm(x, mean = 0, sd = 1),
+    geom = "area",
+    xlim = c(-1*MAX_VAL, -1 * test_statistic),
+    # color = "orange",
+    fill = 'grey',
+    size = 1
+  ) +
+  stat_function(
+    # fun = function(x) dt(x, df=2),
+    fun = function(x) dnorm(x, mean = 0, sd = 1),
+    geom = "area",
+    xlim = c(test_statistic, MAX_VAL),
+    # color = "orange",
+    fill = 'grey',
+    size = 1
+  ) +
+  geom_vline(xintercept =test_statistic, color="darkblue", size=1) +  
+  xlim(c(-1*MAX_VAL,MAX_VAL))+
+  theme_classic() +
+  custom_adjust_fonts(15) +
+  xlab("Test-statistic") +
+  ylab("Probability")
+  
+# Save
+ggsave("plots/tut-3/statistics-tstatistic.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)  
+
+# Show
+p + custom_adjust_fonts(12)
+
+# Calculate the probability
+p_H0 <- 2 * (1 - pt(abs(test_statistic), df=2))
+print(paste0("Our two-tailed p-value is ", round(p_H0, 3)))
+```
+
+So, this shows that our p-value is 0.451, and we have to accept H0, 
+and conclude that there is no statistical evidence for differential expression of this gene.
+
+XXXXXXXXX
+
+I WAS EDITING HERE
+
+XXXXXXXXX
+
+
+Since log space ..
+
+.. what DESeq2 actually does (..) test statistic = beta/SE(beta)
+
+It turns out that, if we calculate the log fold change
+
+
 
 
 XXXXXXX I WAS EDITING HERE XXXXXXXX
@@ -773,7 +874,7 @@ dispersion of a gene, and then produces an updated dispersion estimate for
 a each gene separately.
 
 As mentioned, these dispersion estimates are then used to 
-calculate p-values for the likelyhood of H0, and thus to determine which genes are likely differentially expressed.
+calculate p-values for the likelihood of H0, and thus to determine which genes are likely differentially expressed.
 
 ::: {.callout-note}
 
@@ -1174,7 +1275,7 @@ observed changes lie outside the expected random variability, and are thus likel
 related to the different experimental conditions.
 
 Or, in more technical terms, it will calculate p-values based on dispersion estimates, 
-which reflect the likelyhood that H0 (no difference between conditions),
+which reflect the likelihood that H0 (no difference between conditions),
 is true. 
 If that probability is low (typically $p<0.05$ or $<0.01$), 
 we can reject H0, and say that there is likely a difference between conditions.
