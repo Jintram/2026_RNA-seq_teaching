@@ -2,4 +2,3 @@ data/*
 /.quarto/
 .DS_Store*
 plots/*
-html/*

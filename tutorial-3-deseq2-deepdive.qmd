@@ -353,7 +353,7 @@ p <- count_data_real_long_normalized |>
     custom_theme_bar()
 
 # and save
-ggsave("plots/tut-3/normalized_counts_example_raw.pdf", plot=p, width=20, height=15, units='cm', device=cairo_pdf)
+ggsave("plots/tut-3/normalized_counts_example_raw.pdf", plot=p, width=25, height=15, units='cm', device=cairo_pdf)
 
 p + custom_adjust_fonts(12)
 
@@ -702,7 +702,7 @@ p <- count_data_real_long %>%
     ggtitle(paste0('Counts for ', example_gene))
 
 # Save 
-ggsave("plots/tut-3/statistics-gene-example.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
+ggsave("plots/tut-3/statistics-gene-example.pdf", plot=p, width=17, height=13, units='cm', device=cairo_pdf)
 
 # And show
 p + custom_adjust_fonts(12)
@@ -758,7 +758,7 @@ p <- count_data_real_long %>%
     ggtitle(paste0('Counts for ', example_gene))
 
 # Save 
-ggsave("plots/tut-3/statistics-gene-example-chance.pdf", plot=p, width=10, height=10, units='cm', device=cairo_pdf)
+ggsave("plots/tut-3/statistics-gene-example-chance.pdf", plot=p, width=14, height=13, units='cm', device=cairo_pdf)
 
 # And show
 p + custom_adjust_fonts(12)
@@ -1072,55 +1072,15 @@ $\text{variance}$ - $\mu$ relationship.
 :::
 
 
-
-Here, during the fitting procedure, the value of $\alpha_i$ 
-itself is described using a probability distribution 
-(not to be confused with the gene's NB distribution, which describes count values).
-Using the fitted trend as a prior, DESeq2
-
-refines each gene-wise dispersion estimate by pulling it toward the fitted trend. Genes with few observations (and thus noisy estimates) are pulled more strongly toward the trend, while genes with many observations retain estimates closer to their original value.
-
-Using a Bayesian approach, which involves updating the estimate 
-of the value of a parameter (in terms of its probability distribution),
-using information from a second probability distribution, 
-DESeq2 now updates it's initial estimate of the gene-wise dispersion.
-
-
-
-Using empirical Bayes, shrink each gene-wise estimate toward the fitted trend, yielding a final dispersion that borrows strength across genes.
-
-
-
-.. what DESeq2 actually does (..) test statistic = beta/SE(beta)
-
-Since log space ..
-
-It turns out that, if we calculate the log fold change
-
-
-
-
-
-
-XXXXXXX I WAS EDITING HERE XXXXXXXX
-
-
-DESeq2 tries to quantify this trend, combine it with information on the observed 
-dispersion of a gene, and then produces an updated dispersion estimate for 
-a each gene separately.
-
-As mentioned, these dispersion estimates are then used to 
-calculate p-values for the likelihood of H0, and thus to determine which genes are likely differentially expressed.
-
-
-
 # Estimate log fold changes
 
+I WAS EDITING HERE!!
 
 XXXXXXXXXXXXXXXXXXXXXXXXX
 
 THE ESTIMATION OF DISPERSIONS DOES COME FIRST, AND CAN BE INCORPORATED 
 EASILY IN THE MANUAL GLM!!
+
 ```{R}
 
 ###### CODE BY CLAUDE ######
