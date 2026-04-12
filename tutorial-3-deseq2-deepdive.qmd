@@ -561,7 +561,7 @@ p <- df_dispersion_real |>
       # trendline
     geom_smooth(method='lm', formula = y ~ x, color='red') +
     # points
-    geom_point() +
+    geom_point(alpha=.1) +
     # R = ..
     annotate("text", x = 0.1, y = max(df_dispersion_real$sd)*.95, 
              label = paste0("R = ", round(cor(df_dispersion_real$mean, df_dispersion_real$sd), 2)),
@@ -581,6 +581,8 @@ p + custom_adjust_fonts(12)
 What DESeq2 will try to do is quantify this trend, 
 and use that to estimate each gene's dispersion due to "randomness"
 (which is then later used to calculated p-values, et cetera, as mentioned above).
+
+### Obtaining good dispersion estimates
 
 Specifically, DESeq2 assumes gene count values show statistics that are 
 consistent with a negative binominal distribution.
@@ -637,7 +639,7 @@ p + custom_adjust_fonts(12)
 
 
 This seems to work rather well for our data. Using this information, 
-we can now estimate the variability of any gene, given its mean:
+we can now estimate the variability of any gene, given its mean $\mu$:
 
 $$
 \text{estimated variance}_\text{gene} = \mu_\text{gene} + \alpha_\text{global fit} \cdot \mu_\text{gene}^2
@@ -647,12 +649,17 @@ This is great! If we now have a gene whos average expression is different betwee
 two conditions, we can use this information to estimate how likely it is that
 that difference was due to chance.
 
-Let's illustrate this with a randomly selected gene (that only has few counts).
+### Using the estimated gene variance to calculate p-values
+
+Let's illustrate how the estimated variance can be used to determine p-values 
+by looking at a randomly selected gene.
 
 ```{r}
+#| code-fold: true
 
 set.seed(1234)
 
+# Let's take a gene with not too many counts (not entirely random after all)
 example_gene <- sample(
   (count_data_real_long %>% filter(counts > 10 & counts < 15))$gene,
   1
@@ -702,11 +709,11 @@ p + custom_adjust_fonts(12)
 
 ```
 
-Here, the x-axis shows the counts of the selected gene, and points indicate
-specific values that were recorded (for points, differences in the y direction  are 
-only for visualization purposes). 
-The line indicates the negative binominal distribution with mean equal to the 
-mean of the gene's expression in the GC condition, and dispersion as estimated by our fit.
+The points (solid circles) indicate count data from the experiment, and the
+yellow line indicates the predicted distribution for the control condition 
+(GC in this case; following a negative binomial probability with this gene's mean, 
+and variance as extrapolated above).
+
 To determine whether there is statistical evidence for differential expression,
 we want to know the probability that the count values of the FLT conditions
 occured only by chance. That is, given the yellow distribution (H0), what is 
@@ -758,37 +765,30 @@ p + custom_adjust_fonts(12)
 
 ```
 
-For AT1G14240 to have >21 counts, that probability is 0.84, so very likely
+E.g., the probability of AT1G14240 showing >21 counts is 0.84, so very likely
 under H0.
 
-To calculate the likelihood that the mean of multiple FLT count observations are higher (or lower)
-than the GC mean (reference condition), 
-the calculation is a bit more complicated.
+However, we want to calculate the likelihood that the mean of multiple FLT count observations are higher (or lower)
+than the GC mean (reference condition).
+To do this, we can use a Wald or t-test.
 
-This is however a common problem, and 
-we can use a Wald or t-test here.
-
-These are very related, they both have the same test statistic:
+These are very related, both have the same test statistic:
 
 $$
-\frac{\mu_{GC} - \text{mean}_{FLT}}{\sqrt{\text{var}}/\sqrt{N}}
+\frac{\mu_{GC} - \text{mean}_\text{FLT}}{\sqrt{\text{variance}}/\sqrt{N}}
 $$
 
-($\mu$ indicating our H0 population mean.)
+Here, $\mu$ indicates our H0 population mean, which in practice will be
+the mean, $\text{mean}_\text{GC}$. $\text{variance}$ is the variance in the counts.
+Note that $\sqrt{\text{variance}}/\sqrt{N}$ equals the standard error $\text{SE}$, which
+will be relevant later.
 
-This test statistic can be assumed to be normally distributed due to the central limit theorem.
-Or, more specifically, in the t-test this test-statistic is assumed to follow the t-distribution,
-which gets broader for small sample sizes, but converges to the normal distribution for large sample sizes.
-In the Wald test, this test statistic is simply assumed to be 
-normally distributed (in other words, the t-test is a refinement of the Wald test).
+In the t-test, this test statistic is assumed to follow the t-distribution. 
+In the Wald test, this test statistic is assumed to follow a normal distribution. 
+The location of the test statistic on the curve indicates the probability of H0 
+being true, and thus the statistical significance of the observed difference between conditions.
 
-For small sample sizes, in principle, the Wald test is not so suitable. 
-However, since DESeq2 doesn't base the estimated variability and 
-expression difference (reflected by the fold change) on information only
-from a single gene, it has more reliable variance estimates, and can use the Wald test, 
-and get more statistical power.
-
-Which we can calculate to be:
+Let's use the Wald test to calculate our p-value:
 
 ```{r}
 #| code-fold: true
@@ -833,7 +833,7 @@ p <- ggplot() +
   xlim(c(-1*MAX_VAL,MAX_VAL))+
   theme_classic() +
   custom_adjust_fonts(15) +
-  xlab("Test-statistic") +
+  xlab("x") +
   ylab("Probability")
   
 # Save
@@ -842,43 +842,67 @@ ggsave("plots/tut-3/statistics-tstatistic.pdf", plot=p, width=10, height=10, uni
 # Show
 p + custom_adjust_fonts(12)
 
+```
+
+The yellow curve shows a gaussian distribution (mean $\mu=0$ and standard deviation $\text{sd}=1$),
+and the location of the test-statistic in blue at `round(test_statistic, 2)`.
+
+```{r}
+#| code-fold: true
+
 # Calculate the probability
 p_H0 <- 2 * (1 - pt(abs(test_statistic), df=2))
 print(paste0("Our two-tailed p-value is ", round(p_H0, 3)))
 ```
 
-So, this shows that our p-value is 0.451, and we have to accept H0, 
+Integration of the grey areas (two-sided test) shows that that our p-value is 0.451.
+(I.e. the probability of the experimental observation occuring to chance
+under H0.)
+ We thus have to accept H0
 and conclude that there is no statistical evidence for differential expression of this gene.
+(Which was already relatively obvious from simply looking at the counts that were measured.) 
 
-XXXXXXXXX
+### Bam! 
 
-I WAS EDITING HERE
+Hurray, we now have our p-value!
 
-XXXXXXXXX
+DESeq2's procedure is quite a bit more involved, but the principles 
+are very close to what we just did.
 
-
-Since log space ..
-
-.. what DESeq2 actually does (..) test statistic = beta/SE(beta)
-
-It turns out that, if we calculate the log fold change
-
-
-
-
-XXXXXXX I WAS EDITING HERE XXXXXXXX
-
-
-DESeq2 tries to quantify this trend, combine it with information on the observed 
-dispersion of a gene, and then produces an updated dispersion estimate for 
-a each gene separately.
-
-As mentioned, these dispersion estimates are then used to 
-calculate p-values for the likelihood of H0, and thus to determine which genes are likely differentially expressed.
+### Some technical notes
 
 ::: {.callout-note}
 
-## Technical: DESeq2 doesn't using fit the normalized counts
+### The Wald test vs. the t-test
+
+As mentioned, the distribution used for the t-test is the 
+t-distribution, and distribution used during the Wald test is the normal distribution.
+
+The central limit theorem states that if we have enough samples, 
+the mean of will be normally distributed, even if the data
+follows another distribution (such as the negative binominal distribution, in our case).
+
+This is why we can use the Wald test.
+
+However, the central limit theorem breaks down for small sample sizes.
+The t-distribution accounts for small sample sizes (gets broader), and is usually
+more suitable for experiments with small sample sizes.
+For large sample sizes ($n \to \infty$), the t-distribution is equal to
+the normal distribution.
+Thus, the t-test is a refinement of the Wald test.
+
+For small sample sizes, in principle, the Wald test is not so suitable. 
+However, since DESeq2 doesn't base the estimated variability and 
+expression difference (reflected by the fold change) on information only
+from a single gene, it has more reliable variance estimates, such that we can use the Wald test, 
+and get more statistical power.
+
+:::
+
+
+::: {.callout-note}
+
+## Technical: the negative binominal distribution is discrete
 
 DESeq2 works with negative binomial distributions, which describe the
 statistics of discrete numbers.
@@ -886,9 +910,11 @@ statistics of discrete numbers.
 After normalization of the counts by the size factors, the counts are not
 integers any more. 
 
-Under the hood, DESeq2 keeps working with the discrete counts.
+Therefor, under the hood, DESeq2 keeps working with the discrete counts.
 
-The model is as follows:
+For reference, 
+the model is written out below,
+but the terms used are explained in the next section.
 
 $$
 K_{ij} \sim \text{NB}(\mu_{ij}, \alpha_i)
@@ -922,6 +948,170 @@ MASS::glm.nb(counts ~ condition + offset(log(size_factor)), data = df)
 ```
 
 :::
+
+## What DESeq2 actually does
+
+As will be explained more extensively below, DESeq2 doesn't simply
+compare the means of two conditions.
+
+#### The L2FC equals $\beta_1$ from a linear model
+
+It instead fits a linear model to the log-transformed counts.
+In this section we'll focus on the p-value calculation in DESeq2,
+so let's forget about more complicated linear models  
+and look at a simple example (see the next section that explains DESeq2 uses a GLM and uses dispersion information during fitting):
+
+$$
+\text{[mRNA]}_i = e ^ {\beta_{0,i} + \beta_{1,i} x}
+$$
+
+With $\text{[mRNA]}$ the concentration of mRNA of gene $i$ in condition $x$ (with different
+conditions represented by numbers, $x = \{0, 1\}$), 
+$\beta_{0,i}$ base level expression, and 
+$\beta_{1,i}$ the effect of the condition on the expression of gene $i$. 
+The $\beta$ constants are the ones that are fitted by DESeq2. 
+The e power is used since DESeq2 works in log-space, 
+which is more suitable for gene expression data.
+
+When calculating the log fold change between two conditions, this amounts to:
+
+$$
+log(\text{FC}) = log(\frac{e ^ {\beta_{0,i} + \beta_{1,i} 1} }{e ^ {\beta_{0,i} + \beta_{1,i} 0} }) = log ( e ^ {- \beta_{1,i}} ) = \beta_{1,i}
+$$
+
+This shows that $\beta_1$ actually equals the log-fold change. A simple division
+can convert this to log2 scale, $\text{L2FC} = \beta_1 / \log(2)$.
+
+#### The Wald test is based on $\beta/\text{SE}(\beta_{1,i})$
+
+The test statistic in DESeq2 therefor is:
+
+$$
+\text{test statistic} = \frac{\beta_{1,i}}{\text{SE}(\beta_{1,i})}
+$$
+
+Where the $SE$ can be calculated as it is related to the gene-specific variance. 
+The math they use is more advanced, but we saw something similar earlier
+with $\text{SE} = \sqrt{\text{variance}}/\sqrt{N}$.
+
+#### The variances are estimated using Bayesian logics
+
+In the text above, we used a gene specific prediction for the variance:
+
+$$
+\text{estimated variance}_\text{gene} = \mu_\text{gene} + \alpha_\text{global fit} \cdot \mu_\text{gene}^2
+$$
+
+DESeq2 has a more sophisticated approach that consists of three steps:
+
+##### 1. Gene-wise estimates.
+
+Based on each gene's observed mean and variance, the $\alpha_i$ parameter is estimated for each gene.
+This is done using a _generalized_ linear model (with a design given by the user),
+which includes the negative binomial probability distribution.
+Since this also includes $\beta$ fits according to the model,
+$\alpha_i$ can be fitted using information from the multiple conditions,
+without inter-condition expression differences inflating the variance.  
+
+In the text above, we estimated $\alpha_i$ directly using the within-condition
+variances and means. DESeq2's approach with the generalized linear model (GLM) 
+is more precise.
+
+##### 2. Fit a trend.
+
+The second step is one we also did. 
+
+DESeq2 fits a curve through the gene-wise dispersion estimates as a function of the mean, 
+capturing the overall mean–dispersion relationship.
+
+##### 3. Shrink toward the trend.
+
+Using a Bayesian approach, which involves updating an initial estimate of a parameter 
+by combining it with additional information (in the form of another probability distribution), 
+DESeq2 now updates it's initial estimate of the gene-wise dispersion. 
+
+Generally, Bayes theorem says:
+$$
+P(\text{A} | \text{B}) = \frac{P(\text{B} | \text{A}) \cdot P(\text{A})}{P(\text{B})}
+$$
+
+The DESeq2 paper gets very mathematical here, so the following part leans a bit
+too much on Claude, but is consistent with the paper (disclaimer!) (see equation 9
+in the DESeq2 paper). 
+
+Applied to the gene expression model, this means 
+$$
+P(\alpha_i \mid \text{data}) \propto \underbrace{P(\text{data} \mid \alpha_i)}_{\text{likelihood}} \times \underbrace{P(\alpha_i)}_{\text{prior}}
+$$
+
+Where $P(\text{data} \mid \alpha_i)$ is the belief we have about 
+$\alpha$ from the fit of our data (the GLM), and $P(\alpha_i)$
+is a normal distribution based on the fitted $\text{variance}(\mu)$ trend.
+
+**Final estimate.** Finally, this results in a "shrinking" of the dispersion estimate ($\alpha_i$) towards
+the trend. Especially for low certainty estimates (e.g. genes with few counts), the estimate is pulled more strongly towards the trend, while for high certainty estimates (e.g. genes with many counts), the estimate is pulled less strongly towards the trend.
+After this Bayesian correction, we have the final dispersion estimates.
+
+::: {.callout-note}
+### Relationship to the equation in the paper
+To estimate the peak of the final probability, and thus the final dispersion estimate, 
+the mode is used ("MAP"),
+hence (equation 9 in the DESeq2 paper):
+$$
+a_i^{MAP} = arg max_\alpha (\ell _{CR} (\alpha ; \mu_i, K_i) + \lambda_i(\alpha))
+$$
+where $\ell _{CR} (\alpha ; \mu_i, K_i)$ corresponds to $P(\text{data} \mid \alpha_i)$, 
+where the placement of $\alpha$ is flipped since this is likelihood notation,
+which still relates to the same probability, but 
+emphasizes that we're scanning over possible values of $\alpha$. 
+(The likelihood conveys "given fixed data, which $\alpha$ is most likely?")
+The second function, $\lambda_i(\alpha)$, corresponds to $P(\alpha_i)$, the prior.
+This is a simple Gaussian function, Equation (5) in the DESeq2 paper spells this out. 
+The width of that Gaussian is also based on the width observed in the 
+$\text{variance}$ - $\mu$ relationship.
+:::
+
+
+
+Here, during the fitting procedure, the value of $\alpha_i$ 
+itself is described using a probability distribution 
+(not to be confused with the gene's NB distribution, which describes count values).
+Using the fitted trend as a prior, DESeq2
+
+refines each gene-wise dispersion estimate by pulling it toward the fitted trend. Genes with few observations (and thus noisy estimates) are pulled more strongly toward the trend, while genes with many observations retain estimates closer to their original value.
+
+Using a Bayesian approach, which involves updating the estimate 
+of the value of a parameter (in terms of its probability distribution),
+using information from a second probability distribution, 
+DESeq2 now updates it's initial estimate of the gene-wise dispersion.
+
+
+
+Using empirical Bayes, shrink each gene-wise estimate toward the fitted trend, yielding a final dispersion that borrows strength across genes.
+
+
+
+.. what DESeq2 actually does (..) test statistic = beta/SE(beta)
+
+Since log space ..
+
+It turns out that, if we calculate the log fold change
+
+
+
+
+
+
+XXXXXXX I WAS EDITING HERE XXXXXXXX
+
+
+DESeq2 tries to quantify this trend, combine it with information on the observed 
+dispersion of a gene, and then produces an updated dispersion estimate for 
+a each gene separately.
+
+As mentioned, these dispersion estimates are then used to 
+calculate p-values for the likelihood of H0, and thus to determine which genes are likely differentially expressed.
+
 
 
 # Estimate log fold changes
